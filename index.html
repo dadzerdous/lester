@@ -121,28 +121,42 @@ let fogX           = -300;   // world-space X of fog's RIGHT edge (starts offscr
 // Do NOT reset catapultPhase to 0 on trigger — that causes an infinite loop.
 let catapultPhase  = 0;      // 0=idle(pre-trigger), 1=loading, 2=launching, 3=flying
 let catapultTimer  = 0;
-const CATAPULT_X   = 900;    // world X — reachable in ~10s of walking before fog
+const CATAPULT_X   = 900;    // Ch1 catapult — reachable before fog closes in
 
-// ── Bonfire (Chapter 2 exit / skill menu trigger) ───────────
-// Design intent: bonfire is the Ch2 equivalent of the catapult.
-// When player reaches it, the skill menu opens (souls-like rest point).
-// Skills are mysteries — shown as ? until discovered through play.
-// 10 placeholder slots. Points come from score accumulated in-run.
-// BONFIRE_X is world-space; Ch2 terrain is procedural so it's placed
-// at a fixed distance regardless of terrain layout.
-const BONFIRE_X    = 2200;   // world X of the Ch2 bonfire
-let bonfireReached = false;  // latched true once triggered, prevents re-trigger
-let pendingChapter = CHAPTER.TWO;  // which chapter we're transitioning INTO (used by drawChapterCard)
+// ── Chapter 2 catapult (Ch2 exit → Ch3) ─────────────────────
+// Design intent: Ch2 has the same exit fantasy as Ch1 — another catapult.
+// Placed far enough that the player faces pits + hopper enemy before reaching it.
+// No bonfire in Ch2 — the bonfire is the Ch3 reward.
+const CATAPULT_X2  = 2000;   // world X of the Ch2 catapult
+
+// ── Bonfire (Chapter 3 only — skill menu) ───────────────────
+// Moved to Ch3 so the skill system is a late-game reward.
+// Design intent: player discovers skills AFTER experiencing all basic mechanics.
+const BONFIRE_X    = 2400;   // world X of the Ch3 bonfire
+let bonfireReached = false;
+let pendingChapter = CHAPTER.TWO;  // chapter we're transitioning INTO
 let skillMenuOpen  = false;
-// 10 mystery skill slots — fill these in as we design actual skills
-const SKILLS = Array.from({length:10}, (_,i) => ({
-  id: i,
-  name: '???',        // revealed name (keep as ??? until designed)
-  desc: '...',        // revealed description
-  cost: (i+1) * 10,  // point cost scales with slot index
-  owned: false,
-}));
+// 10 skill slots — only the first is designed; rest are ??? until we decide.
+// Design intent: skills are discovered by the player, not explained up front.
+// Spring Legs (slot 0): stackable charge-speed buff. Each purchase costs more.
+//   Effect applied in update() — chargeTime += dt * springLegsMultiplier.
+//   DO NOT cap stacks — the escalating cost is the natural limiter.
+const BASE_SPRING_COST = 15; // base cost for first Spring Legs purchase
+const SKILLS = [
+  // Slot 0: Spring Legs — the only designed skill so far
+  { id:0, name:'Spring Legs', desc:'+10% charge speed', cost:BASE_SPRING_COST, owned:false, stacks:0, stackable:true },
+  // Slots 1–9: reserved / mystery
+  ...Array.from({length:9}, (_,i) => ({
+    id: i+1, name:'???', desc:'...', cost:(i+2)*20, owned:false, stacks:0, stackable:false,
+  }))
+];
 let skillPoints = 0; // awarded from score when bonfire is reached
+
+function getSpringLegsMultiplier() {
+  // Each stack of Spring Legs adds 10% charge speed (multiplicative with dt in update)
+  const stacks = SKILLS[0].stacks;
+  return 1 + stacks * 0.10;
+}
 
 // ── Persistent scoring ─────────────────────────────────────
 // Design intent: highScore rewards skill, totalScore rewards dedication.
@@ -170,36 +184,42 @@ function buildTerrain() {
   terrainHead = 0;
 
   if (chapter === CHAPTER.ONE) {
-    // Ch1: flat ground — player needs to learn movement and tap-jump before pits exist.
-    // The catapult sits at CATAPULT_X as the exit goal.
+    // Ch1: flat ground only — player learns movement + tap-jump before any hazards.
+    // Catapult at CATAPULT_X is the exit. Fog wall creates urgency.
     terrain.push({ type:'ground', x:0, w:CATAPULT_X + 600 });
     terrainHead = CATAPULT_X + 600;
   } else if (chapter === CHAPTER.TWO) {
-    // Ch2: procedural ground + pits + platforms. Bonfire at BONFIRE_X is the exit.
-    terrain.push({ type:'ground', x:0, w:600 });
-    terrainHead = 600;
-    genTerrain(3000);
+    // Ch2: pits introduced, NO platforms (platforms are Ch3's new mechanic).
+    // New enemy: hopper. Exit is a second catapult at CATAPULT_X2.
+    // Charge jump mechanic discovered organically here.
+    terrain.push({ type:'ground', x:0, w:500 });
+    terrainHead = 500;
+    genTerrain(CATAPULT_X2 + 600);
   } else {
-    // Ch3: TBD — for now an infinite procedural runner, harder than Ch2.
-    // Design intent: this is the unknown. Keep it as a stub until we decide
-    // what Lester's growth means mechanically at this stage.
+    // Ch3: pits + PLATFORMS introduced. Bonfire is the exit / skill unlock.
+    // Hopper returns here too, harder. Player now has skills from bonfire.
     terrain.push({ type:'ground', x:0, w:400 });
     terrainHead = 400;
-    genTerrain(3000);
+    genTerrain(BONFIRE_X + 600);
   }
 }
 
 function genTerrain(upTo) {
   while (terrainHead < upTo) {
     const diff = Math.min(terrainHead / 5000, 1);
-    if (chapter === CHAPTER.TWO && Math.random() < 0.30 + diff*0.18) {
+    // Pits exist in Ch2 and Ch3
+    const pitChance = (chapter >= CHAPTER.TWO) ? 0.30 + diff*0.18 : 0;
+    if (Math.random() < pitChance) {
       const pw = irnd(100, 170 + diff*80);
       terrain.push({ type:'pit', x:terrainHead, w:pw });
       terrainHead += pw;
     } else {
       const gw = irnd(200, 380);
       terrain.push({ type:'ground', x:terrainHead, w:gw });
-      if (chapter === CHAPTER.TWO && Math.random() < 0.55) {
+      // Platforms ONLY in Ch3 — this is their debut mechanic.
+      // Design intent: player needs to discover pits + hopper in Ch2 without
+      // platform complexity. Platforms in Ch3 add vertical play.
+      if (chapter === CHAPTER.THREE && Math.random() < 0.55) {
         const gy = GY();
         const plw=irnd(80,160), plh=14;
         const plx=terrainHead+irnd(24,gw-plw-24);
@@ -251,16 +271,29 @@ const enemies = [];
 let eSpawnTimer = 0;
 
 const ETYPES_CH1 = [
+  // Ch1: crabs only — simple, ground-level, easy to learn jump timing against.
   {w:32,h:20,spd:1.6,label:'crab',  col:'#e84c3d',acc:'#ff7c6e'},
 ];
 const ETYPES_CH2 = [
-  {w:32,h:20,spd:1.8,label:'crab',  col:'#e84c3d',acc:'#ff7c6e'},
-  {w:18,h:42,spd:1.4,label:'totem', col:'#8b6914',acc:'#c9a227'},
-  {w:28,h:26,spd:1.2,label:'turtle',col:'#2e8b57',acc:'#52c97a'},
+  // Ch2: crabs return + hopper introduced.
+  // Hopper does a small periodic bounce, making it harder to jump over.
+  // No totem/turtle yet — introduce them gradually.
+  {w:32,h:20,spd:1.8,label:'crab',   col:'#e84c3d',acc:'#ff7c6e'},
+  {w:24,h:28,spd:1.5,label:'hopper', col:'#5b2d8e',acc:'#b86ee8'},
+];
+const ETYPES_CH3 = [
+  // Ch3: all types return, hopper more common, speeds up.
+  {w:32,h:20,spd:2.0,label:'crab',   col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.6,label:'totem',  col:'#8b6914',acc:'#c9a227'},
+  {w:28,h:26,spd:1.4,label:'turtle', col:'#2e8b57',acc:'#52c97a'},
+  {w:24,h:28,spd:1.8,label:'hopper', col:'#5b2d8e',acc:'#b86ee8'},
+  {w:24,h:28,spd:1.8,label:'hopper', col:'#5b2d8e',acc:'#b86ee8'}, // double weight
 ];
 
 function getETypes() {
-  return chapter === CHAPTER.ONE ? ETYPES_CH1 : ETYPES_CH2;
+  if(chapter===CHAPTER.ONE)   return ETYPES_CH1;
+  if(chapter===CHAPTER.TWO)   return ETYPES_CH2;
+  return ETYPES_CH3;
 }
 
 function spawnEnemy() {
@@ -277,6 +310,10 @@ function spawnEnemy() {
     anim: rnd(0, Math.PI*2),
     grounded: true,
     vy: 0,
+    // Hopper-specific: hopTimer counts toward next hop, hopPhase tracks arc.
+    // Design intent: hop is a SMALL bounce (~40% of player jump height).
+    // It should be just enough to make timing tricky, not undodgeable.
+    hopTimer: rnd(0, 1200),  // stagger hop timing so not all hoppers sync
   });
 }
 
@@ -301,7 +338,6 @@ function updateEnemies(dt) {
     const eGround = isGroundAt(e.x);
     if (e.y + e.h/2 >= gy) {
       if (!eGround) {
-        // fell into pit — remove
         enemies.splice(i, 1);
         score += 15; // bonus for luring enemy into pit
         continue;
@@ -309,10 +345,19 @@ function updateEnemies(dt) {
         e.y = gy - e.h/2; e.vy = 0; e.grounded = true;
       }
     } else {
-      // Check if walked off edge
-      if (eGround === false) e.grounded = false;
-      // Re-check: if currently "grounded" but ground disappeared
       if (e.grounded && !isGroundAt(e.x)) e.grounded = false;
+    }
+
+    // Hopper hop logic — periodic small bounce.
+    // Design intent: hop interval ~1.5s, upward velocity is ~40% of player min jump.
+    // This makes the hopper's effective height variable and unpredictable.
+    if(e.label==='hopper' && e.grounded){
+      e.hopTimer += dt;
+      if(e.hopTimer > 1500){
+        e.vy = -5.5;  // small hop — enough to be awkward, not enough to sail over pits
+        e.grounded = false;
+        e.hopTimer = 0;
+      }
     }
 
     // Remove if far behind or in catapult zone
@@ -551,8 +596,51 @@ function drawPlatforms() {
 // ══════════════════════════════════════════════════════════════
 //  CATAPULT
 // ══════════════════════════════════════════════════════════════
-function drawCatapult(ts) {
-  const sx = wx(CATAPULT_X);
+// Draw hopper enemy — small alien creature that bounces periodically.
+// Design intent: wide body, big eyes, stubby legs. Cute but threatening.
+// The hop squash/stretch gives visual feedback of when it's about to jump.
+function drawHopper(e) {
+  const squash = e.grounded ? 1 : 0.7; // squish when on ground, stretch mid-air
+  const stretch = e.grounded ? 1 : 1.3;
+  ctx.save();
+  ctx.scale(squash, stretch);
+  // Body — round, wide, alien purple
+  ctx.fillStyle=e.col;
+  ctx.beginPath(); ctx.ellipse(0,0,e.w/2,e.h/2*0.8,0,0,Math.PI*2); ctx.fill();
+  // Belly highlight
+  ctx.fillStyle=e.acc;
+  ctx.beginPath(); ctx.ellipse(0,3,e.w/2*0.55,e.h/2*0.4,0,0,Math.PI*2); ctx.fill();
+  // Eyes — big, expressive
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.ellipse(-6,-5,5,6,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( 6,-5,5,6,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#1a0030';
+  ctx.beginPath(); ctx.ellipse(-6,-5,2.5,3.5,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( 6,-5,2.5,3.5,0,0,Math.PI*2); ctx.fill();
+  // Shine
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  ctx.beginPath(); ctx.ellipse(-7,-7,1.2,1.5,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( 5,-7,1.2,1.5,0,0,Math.PI*2); ctx.fill();
+  // Stubby legs (visible when on ground)
+  if(e.grounded){
+    ctx.fillStyle=e.col;
+    ctx.beginPath(); ctx.ellipse(-7,e.h/2*0.6,4,3,0.3,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse( 7,e.h/2*0.6,4,3,-0.3,0,Math.PI*2); ctx.fill();
+  }
+  // Antenna
+  ctx.strokeStyle=e.acc; ctx.lineWidth=1.5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-4,-e.h/2*0.8); ctx.lineTo(-7,-e.h/2*0.8-8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo( 4,-e.h/2*0.8); ctx.lineTo( 7,-e.h/2*0.8-8); ctx.stroke();
+  ctx.fillStyle=e.acc;
+  ctx.beginPath(); ctx.arc(-7,-e.h/2*0.8-9,2.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 7,-e.h/2*0.8-9,2.5,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// drawCatapult: draws catapult at given world X.
+// Reused for both Ch1 (CATAPULT_X) and Ch2 (CATAPULT_X2).
+function drawCatapult(ts, worldX) {
+  const sx = wx(worldX);
   const gy = GY();
   if(sx < -200 || sx > canvas.width+200) return;
 
@@ -594,8 +682,8 @@ function drawCatapult(ts) {
 
   // "LAUNCH" sign near catapult
   if(catapultPhase===0){
-    const dist = CATAPULT_X - player.x;
-    if(dist < 500){
+    const dist = worldX - player.x;
+    if(dist < 500 && dist > 0){
       const alpha = Math.max(0, 1-(dist-100)/300);
       ctx.save();
       ctx.globalAlpha=alpha*Math.abs(Math.sin(ts*0.003));
@@ -614,9 +702,10 @@ function drawEnemies() {
     const sx=wx(e.x); if(sx<-100||sx>canvas.width+100) continue;
     const bob = e.grounded ? Math.sin(e.anim)*2 : 0;
     ctx.save(); ctx.translate(sx,e.y+bob);
-    if(e.label==='crab')       drawCrab(e);
-    else if(e.label==='totem') drawTotem(e);
-    else                       drawTurtle(e);
+    if(e.label==='crab')         drawCrab(e);
+    else if(e.label==='totem')   drawTotem(e);
+    else if(e.label==='hopper')  drawHopper(e);
+    else                         drawTurtle(e);
     ctx.fillStyle='rgba(255,220,100,0.85)'; ctx.font='bold 12px Courier New'; ctx.textAlign='center';
     ctx.fillText('!',0,-e.h/2-10);
     ctx.restore();
@@ -918,7 +1007,13 @@ function drawSkillMenu() {
     // Icon — ? for mystery, ✦ if owned
     ctx.fillStyle=sk.owned?'#a78bfa':canAfford?'rgba(255,255,255,0.6)':'rgba(255,255,255,0.2)';
     ctx.font=`bold 22px Courier New`; ctx.textAlign='center';
-    ctx.fillText(sk.owned?'✦':'?', sx2+slotW/2, sy+slotH/2+8);
+    const slotIcon = sk.owned ? (sk.stackable ? `✦` : '✦') : '?';
+    ctx.fillText(slotIcon, sx2+slotW/2, sy+slotH/2+4);
+    // Show stack count for stackable skills
+    if(sk.stackable && sk.stacks>0){
+      ctx.fillStyle='#ffd66b'; ctx.font='bold 9px Courier New';
+      ctx.fillText(`x${sk.stacks}`, sx2+slotW/2, sy+slotH/2+16);
+    }
 
     // Cost badge
     if(!sk.owned){
@@ -931,7 +1026,10 @@ function drawSkillMenu() {
   // Selected slot detail
   const sel=SKILLS[skillCursor];
   ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.font='12px Courier New'; ctx.textAlign='center';
-  ctx.fillText(sel.owned ? '[ Acquired ]' : `Cost: ${sel.cost} SP`, cx, cy+48);
+  const selLabel = sel.owned
+    ? (sel.stackable ? `[ x${sel.stacks} — Next: ${sel.cost} SP ]` : '[ Acquired ]')
+    : `Cost: ${sel.cost} SP`;
+  ctx.fillText(selLabel, cx, cy+48);
   ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px Courier New';
   ctx.fillText(sel.owned ? sel.desc : '???', cx, cy+65);
 
@@ -998,8 +1096,8 @@ function drawHUD(ts) {
     }
   }
 
-  // Ch2: bonfire hint when close — bottom center
-  if(chapter===CHAPTER.TWO){
+  // Ch3: bonfire hint when close — bottom center
+  if(chapter===CHAPTER.THREE){
     const bDist = BONFIRE_X - player.x;
     if(bDist < 500 && bDist > 0){
       const alpha = Math.max(0, 1 - bDist/400) * (0.7+0.3*Math.sin(Date.now()*0.004));
@@ -1122,7 +1220,8 @@ function updateCatapult(dt) {
     player.vx *= 0.995;
     if(catapultTimer > 2200){
       // Transition to chapter card
-      pendingChapter=CHAPTER.TWO;
+      // Which chapter comes next depends on which catapult fired
+      pendingChapter = chapter===CHAPTER.ONE ? CHAPTER.TWO : CHAPTER.THREE;
       gameState='chaptercard'; stateTimer=0;
     }
   }
@@ -1224,7 +1323,9 @@ function update(dt) {
     if(player.grounded){
       if(held){
         player.crouching=true;
-        player.chargeTime=Math.min(player.chargeTime+dt,player.maxCharge);
+        // Spring Legs skill multiplies charge speed.
+        // getSpringLegsMultiplier() returns 1.0 + stacks*0.10.
+        player.chargeTime=Math.min(player.chargeTime+dt*getSpringLegsMultiplier(),player.maxCharge);
       }
       if(player.jumpQueued||(!held && player.crouching)){
         const pct=Math.max(0.15,player.chargeTime/player.maxCharge);
@@ -1271,14 +1372,26 @@ function update(dt) {
   cameraX+=(tc-cameraX)*0.08; if(cameraX<0) cameraX=0;
 
   // Generate terrain ahead (ch2)
-  if(chapter===CHAPTER.TWO) genTerrain(player.x+canvas.width*2);
+  if(chapter>=CHAPTER.TWO) genTerrain(player.x+canvas.width*2);
 
-  // Ch2 bonfire trigger — opens skill menu when player reaches it
-  if(chapter===CHAPTER.TWO && !bonfireReached && player.x >= BONFIRE_X - 60){
+  // Ch2 catapult trigger — same mechanic as Ch1 catapult but uses CATAPULT_X2.
+  if(chapter===CHAPTER.TWO && player.x >= CATAPULT_X2 - 80 && catapultPhase===0){
+    gameState='catapult'; stateTimer=0;
+    catapultPhase=1;
+    catapultTimer=0;
+    player.vx=0; player.facing=1;
+    enemies.length=0;
+    return;
+  }
+
+  // Ch3 bonfire trigger — opens skill menu when player reaches it.
+  // Design intent: bonfire is the Ch3 reward, not Ch2. Player earns skills
+  // only after experiencing pits (Ch2) + platforms + hopper (Ch3).
+  if(chapter===CHAPTER.THREE && !bonfireReached && player.x >= BONFIRE_X - 60){
     bonfireReached=true;
     skillMenuOpen=true;
-    skillPoints = Math.floor(score / 5); // convert score to skill points
-    player.vx=0; // stop player at bonfire
+    skillPoints = Math.floor(score / 5);
+    player.vx=0;
   }
 
   updateEnemies(dt);
@@ -1294,11 +1407,12 @@ function render(ts) {
   drawMountains();
   drawBgTrees();
   drawTerrain();
-  if(chapter===CHAPTER.TWO) drawPlatforms();
-  if(chapter===CHAPTER.TWO) drawBonfire(ts);
+  if(chapter===CHAPTER.THREE) drawPlatforms();
+  if(chapter===CHAPTER.THREE) drawBonfire(ts);
 
   // Catapult (ch1 always visible near the end)
-  if(chapter===CHAPTER.ONE) drawCatapult(ts);
+  if(chapter===CHAPTER.ONE) drawCatapult(ts, CATAPULT_X);
+  if(chapter===CHAPTER.TWO) drawCatapult(ts, CATAPULT_X2);
 
   drawEnemies();
 
@@ -1335,6 +1449,25 @@ document.addEventListener('touchstart', e=>{
   if(gameState==='gameover' && stateTimer>700)  { startChapter(chapter); return; }
   if(gameState==='chaptercard' && stateTimer>1000){ startChapter(pendingChapter); return; }
 });
+// buySkill: handles both stackable and one-time skills.
+// Spring Legs (slot 0) is stackable — each purchase raises cost by 50%.
+// All other skills are one-time purchases.
+function buySKill(idx) {
+  const sk = SKILLS[idx];
+  if(skillPoints < sk.cost) return;
+  if(sk.stackable){
+    skillPoints -= sk.cost;
+    sk.stacks++;
+    sk.owned = true;
+    // Escalate cost for next stack: +50% per purchase (rounded)
+    sk.cost = Math.round(sk.cost * 1.5);
+  } else {
+    if(sk.owned) return;
+    skillPoints -= sk.cost;
+    sk.owned = true;
+  }
+}
+
 document.addEventListener('keydown', e=>{
   // Skill menu navigation
   if(skillMenuOpen){
@@ -1343,8 +1476,7 @@ document.addEventListener('keydown', e=>{
     if(e.key==='ArrowDown')  skillCursor=(skillCursor+5)%10;
     if(e.key==='ArrowUp')    skillCursor=(skillCursor+5)%10;
     if(e.key===' '||e.key==='Enter'){
-      const sk=SKILLS[skillCursor];
-      if(!sk.owned && skillPoints>=sk.cost){ sk.owned=true; skillPoints-=sk.cost; }
+      buySKill(skillCursor);
     }
     if(e.key==='c'||e.key==='C'){
       // C to continue from skill menu
