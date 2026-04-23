@@ -98,9 +98,20 @@ const CHAPTER = { ONE:1, TWO:2, THREE:3 };
 
 let chapter        = CHAPTER.ONE;
 let chapterTimer   = 0;
-let gameState      = 'playing';  // 'playing' | 'catapult' | 'chaptercard' | 'gameover'
+let gameState      = 'home';
+// gameState values:
+//   'home'        — main menu (shown after death, not on first load which auto-starts)
+//   'playing'     — normal gameplay
+//   'catapult'    — cutscene: Lester being launched
+//   'chaptercard' — between-chapter fade card
+//   'gameover'    — death screen with Continue / Home options
+// Design intent: home screen only shown AFTER first death — player is dropped
+// straight into Ch1 on first load. Keeps the cold-open feel.
 let stateTimer     = 0;
 let score          = 0;
+let homeMenuCursor = 0; // 0=Continue, 1=New Game, 2=How To Play
+let deathCount     = 0; // tracks if player has died at least once (gates home screen access)
+let howToPlayOpen  = false;
 let cameraX        = 0;
 let lastTime       = 0;
 
@@ -205,17 +216,41 @@ function buildTerrain() {
 }
 
 function genTerrain(upTo) {
+  // Design intent for fair pit placement:
+  // 1. NEVER place a pit immediately after another pit — player needs ground to land and re-charge.
+  // 2. Ground segment AFTER a pit must be wide enough to land + crouch + jump again.
+  //    MIN_LANDING = 280px — enough for Lester to touch down, decelerate, and charge jump.
+  // 3. Ground segments BEFORE a pit can be shorter — 200px min is fine since player is already running.
+  // 4. Pit width is capped so even a minimal charge jump (tap) can clear it.
+  //    MAX_PIT at full diff = 230px. A tap jump covers ~260px at walking speed — always clearable.
+  const MIN_LANDING = 280;  // minimum ground after a pit
+  const MIN_GROUND  = 200;  // minimum ground anywhere else
+  const MAX_GROUND  = 360;
+  const MIN_PIT     = 100;
+  const MAX_PIT_BASE= 170;  // base max pit width — diff adds up to 60px on top
+
+  let lastWasPit = false;   // tracks previous segment to prevent consecutive pits
+
   while (terrainHead < upTo) {
     const diff = Math.min(terrainHead / 5000, 1);
-    // Pits exist in Ch2 and Ch3
-    const pitChance = (chapter >= CHAPTER.TWO) ? 0.30 + diff*0.18 : 0;
-    if (Math.random() < pitChance) {
-      const pw = irnd(100, 170 + diff*80);
+    const pitChance = (chapter >= CHAPTER.TWO) ? 0.30 + diff*0.15 : 0;
+
+    // Never pit-after-pit
+    const canPit = !lastWasPit && Math.random() < pitChance;
+
+    if (canPit) {
+      // Pit width: always jumpable with at least a minimal charge.
+      // Max pit grows slightly with difficulty but stays within Lester's range.
+      const pw = irnd(MIN_PIT, MAX_PIT_BASE + diff*60);
       terrain.push({ type:'pit', x:terrainHead, w:pw });
       terrainHead += pw;
+      lastWasPit = true;
     } else {
-      const gw = irnd(200, 380);
+      // Ground segment: wider after a pit to guarantee safe landing room
+      const minW = lastWasPit ? MIN_LANDING : MIN_GROUND;
+      const gw = irnd(minW, MAX_GROUND);
       terrain.push({ type:'ground', x:terrainHead, w:gw });
+
       // Platforms ONLY in Ch3 — this is their debut mechanic.
       // Design intent: player needs to discover pits + hopper in Ch2 without
       // platform complexity. Platforms in Ch3 add vertical play.
@@ -232,6 +267,7 @@ function genTerrain(upTo) {
         }
       }
       terrainHead += gw;
+      lastWasPit = false;
     }
   }
 }
@@ -339,7 +375,7 @@ function updateEnemies(dt) {
     if (e.y + e.h/2 >= gy) {
       if (!eGround) {
         enemies.splice(i, 1);
-        score += 15; // bonus for luring enemy into pit
+        // No score for pit kills — stomp kills will be added later.
         continue;
       } else {
         e.y = gy - e.h/2; e.vy = 0; e.grounded = true;
@@ -369,7 +405,7 @@ function updateEnemies(dt) {
       const ph = player.crouching ? PH*0.6 : PH;
       if (player.x+PW/2-m > e.x-e.w/2 && player.x-PW/2+m < e.x+e.w/2 &&
           player.y+ph/2-m > e.y-e.h/2 && player.y-ph/2+m < e.y+e.h/2) {
-        gameState='gameover'; stateTimer=0; saveScores();
+        gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores();
       }
     }
   }
@@ -1044,6 +1080,74 @@ function drawSkillMenu() {
   ctx.restore();
 }
 
+
+// ══════════════════════════════════════════════════════════════
+//  HOME SCREEN
+// Design intent: only accessible after first death — cold open on first play.
+// Three options: Continue (resume same chapter), New Game (reset all), How To Play.
+// How To Play is intentionally minimal — "SURVIVE" captures the whole design.
+// ══════════════════════════════════════════════════════════════
+const HOME_OPTS = ['CONTINUE', 'NEW GAME', 'HOW TO PLAY'];
+
+function drawHome(ts) {
+  const cx=canvas.width/2, cy=canvas.height/2;
+  const t=ts*0.001;
+  // Background — reuse game bg
+  drawBg(); drawStars(ts); drawMountains();
+
+  // Title glow
+  const grd=ctx.createRadialGradient(cx,cy-60,0,cx,cy-60,180);
+  grd.addColorStop(0,'rgba(120,60,200,0.35)'); grd.addColorStop(1,'rgba(120,60,200,0)');
+  ctx.fillStyle=grd; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Game title
+  ctx.save();
+  ctx.fillStyle='rgba(200,180,255,0.9)'; ctx.font='bold 28px Courier New'; ctx.textAlign='center';
+  ctx.fillText('UNLIKELY HERO', cx, cy-70);
+  ctx.fillStyle='rgba(255,214,107,0.5)'; ctx.font='11px Courier New';
+  ctx.fillText('chapter i — the unlikely lester', cx, cy-48);
+  ctx.restore();
+
+  // Menu options
+  HOME_OPTS.forEach((label, i) => {
+    const oy = cy - 4 + i * 42;
+    const isHov = homeMenuCursor === i;
+    // Highlight box
+    ctx.fillStyle = isHov ? 'rgba(167,139,250,0.18)' : 'rgba(255,255,255,0.04)';
+    ctx.beginPath(); ctx.roundRect(cx-100, oy-20, 200, 34, 7); ctx.fill();
+    ctx.strokeStyle = isHov ? 'rgba(167,139,250,0.9)' : 'rgba(255,255,255,0.1)';
+    ctx.lineWidth=isHov?2:1;
+    ctx.beginPath(); ctx.roundRect(cx-100, oy-20, 200, 34, 7); ctx.stroke();
+    ctx.fillStyle = isHov ? '#ffd66b' : 'rgba(255,255,255,0.55)';
+    ctx.font=`${isHov?'bold ':''}14px Courier New`; ctx.textAlign='center';
+    ctx.fillText(label, cx, oy+1);
+  });
+
+  // Controls hint
+  ctx.save();
+  ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+  ctx.fillText('↑↓ or tap  ·  Enter to select', cx, cy+128);
+  ctx.restore();
+}
+
+function drawHowToPlay() {
+  const cx=canvas.width/2, cy=canvas.height/2;
+  ctx.save();
+  ctx.fillStyle='rgba(4,1,12,0.96)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Big centred instruction — intentionally minimal, souls-like philosophy.
+  // Players discover mechanics; we only confirm the core loop.
+  ctx.fillStyle='rgba(200,180,255,0.85)'; ctx.font='bold 16px Courier New'; ctx.textAlign='center';
+  ctx.fillText('HOW TO PLAY', cx, cy-50);
+
+  ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.font='bold 36px Courier New';
+  ctx.fillText('SURVIVE', cx, cy+6);
+
+  ctx.fillStyle='rgba(255,255,255,0.25)'; ctx.font='11px Courier New';
+  ctx.fillText('Tap  /  Enter to go back', cx, cy+60);
+  ctx.restore();
+}
+
 function drawHUD(ts) {
   const cx = canvas.width/2;
 
@@ -1120,32 +1224,46 @@ function drawHUD(ts) {
 
 function drawGameOver() {
   const fade = Math.min(stateTimer/400, 1);
+  const cx=canvas.width/2, cy=canvas.height/2;
   ctx.save();
-  ctx.fillStyle=`rgba(10,4,28,${fade*0.82})`; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle=`rgba(10,4,28,${fade*0.88})`; ctx.fillRect(0,0,canvas.width,canvas.height);
   if(fade>0.55){
     const a=(fade-0.55)/0.45; ctx.globalAlpha=a;
     ctx.fillStyle='#ff6b6b'; ctx.font='bold 28px Courier New'; ctx.textAlign='center';
-    ctx.fillText('LESTER PANICKED!',canvas.width/2,canvas.height/2-44);
+    ctx.fillText('LESTER PANICKED!', cx, cy-70);
 
     // Score this run
     ctx.fillStyle='#ffd66b'; ctx.font='16px Courier New';
-    ctx.fillText(`Score: ${Math.floor(score)}`,canvas.width/2,canvas.height/2-10);
+    ctx.fillText(`Score: ${Math.floor(score)}`, cx, cy-38);
 
-    // High score (persisted via localStorage)
+    // High score
     const isNew = score >= highScore && score > 0;
     ctx.fillStyle = isNew ? '#a78bfa' : 'rgba(180,160,255,0.7)';
-    ctx.font='13px Courier New';
-    ctx.fillText(
-      isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`,
-      canvas.width/2, canvas.height/2+14
-    );
+    ctx.font='12px Courier New';
+    ctx.fillText(isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`, cx, cy-18);
 
-    // Total score across all runs
-    ctx.fillStyle='rgba(200,200,255,0.55)'; ctx.font='11px Courier New';
-    ctx.fillText(`Total score all-time: ${Math.floor(totalScore)}`,canvas.width/2,canvas.height/2+34);
+    // Total
+    ctx.fillStyle='rgba(200,200,255,0.45)'; ctx.font='11px Courier New';
+    ctx.fillText(`All-time: ${Math.floor(totalScore)}`, cx, cy-2);
 
-    ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.font='12px Courier New';
-    ctx.fillText('Tap  /  Enter to try again',canvas.width/2,canvas.height/2+60);
+    // Options: Continue (retry same chapter) | Go Home
+    // Design intent: Continue keeps the cold feel — no menu needed mid-game.
+    // Home is available after death only, not during play.
+    const opts = ['CONTINUE', 'HOME'];
+    opts.forEach((label, i) => {
+      const oy = cy + 32 + i * 36;
+      const isHov = homeMenuCursor === i;
+      ctx.fillStyle = isHov ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)';
+      ctx.beginPath(); ctx.roundRect(cx-80, oy-18, 160, 30, 6); ctx.fill();
+      ctx.strokeStyle = isHov ? 'rgba(255,214,107,0.8)' : 'rgba(255,255,255,0.15)';
+      ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(cx-80, oy-18, 160, 30, 6); ctx.stroke();
+      ctx.fillStyle = isHov ? '#ffd66b' : 'rgba(255,255,255,0.65)';
+      ctx.font = `${isHov?'bold ':''}13px Courier New`; ctx.textAlign='center';
+      ctx.fillText(label, cx, oy+1);
+    });
+
+    ctx.fillStyle='rgba(255,255,255,0.25)'; ctx.font='10px Courier New';
+    ctx.fillText('↑↓ or tap to select  ·  Enter to confirm', cx, cy+118);
   }
   ctx.restore();
 }
@@ -1230,17 +1348,19 @@ function updateCatapult(dt) {
 // ══════════════════════════════════════════════════════════════
 //  RESET
 // ══════════════════════════════════════════════════════════════
-function startChapter(ch) {
+function startChapter(ch, isNewGame=false) {
   chapter=ch; chapterTimer=0;
   gameState='playing'; stateTimer=0;
-  score=0; cameraX=0;
+  // Score accumulates across ALL chapters in a run — only reset on New Game or death.
+  // Design intent: skill points at bonfire reflect the whole journey, not just Ch3.
+  if(isNewGame) score=0;
+  cameraX=0;
   fogX=-300; eSpawnTimer=0;
   enemies.length=0;
   catapultPhase=0; catapultTimer=0;
   bonfireReached=false; skillMenuOpen=false;
   buildTerrain();
   resetPlayer();
-  // Jump button always says Jump — player discovers charge mechanic organically in Ch2
   jIcon.textContent='↑';
   jLabelEl.textContent='Jump';
 }
@@ -1252,6 +1372,7 @@ function update(dt) {
   stateTimer += dt;
 
   if(gameState==='gameover') return;
+  if(gameState==='home') return;
   if(skillMenuOpen) return;  // pause everything while bonfire skill menu is open
 
   if(gameState==='chaptercard') {
@@ -1278,7 +1399,7 @@ function update(dt) {
     }
     // Fog reaches player = death
     if(fogX >= player.x - PW/2){
-      gameState='gameover'; stateTimer=0; saveScores(); return;
+      gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores(); return;
     }
     // Player reaches catapult trigger.
     // Design intent: set catapultPhase=1 HERE (not 0) so updateCatapult
@@ -1365,7 +1486,7 @@ function update(dt) {
       player.y=gy-PH/2; player.vy=0; player.grounded=true;
     }
   }
-  if(player.y>canvas.height+300){ gameState='gameover'; stateTimer=0; saveScores(); }
+  if(player.y>canvas.height+300){ gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores(); }
 
   // Camera
   const tc=player.x-canvas.width/2;
@@ -1431,6 +1552,8 @@ function render(ts) {
 
   if(gameState==='gameover')    drawGameOver();
   if(gameState==='chaptercard') drawChapterCard();
+  if(gameState==='home')        drawHome(ts);
+  if(howToPlayOpen)             drawHowToPlay();
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1445,8 +1568,52 @@ function loop(ts) {
 // ══════════════════════════════════════════════════════════════
 //  INPUT HANDLERS (global)
 // ══════════════════════════════════════════════════════════════
+
+function confirmGameOver() {
+  if(stateTimer < 700) return;
+  if(homeMenuCursor===0){
+    // Continue — retry same chapter, score resets (it's a new run attempt)
+    score=0; startChapter(chapter);
+  } else {
+    // Home — go to home screen
+    gameState='home'; stateTimer=0; homeMenuCursor=0; score=0;
+  }
+}
+
+function confirmHome() {
+  if(howToPlayOpen){ howToPlayOpen=false; return; }
+  if(homeMenuCursor===0){
+    // Continue — same chapter as when they died
+    startChapter(chapter);
+  } else if(homeMenuCursor===1){
+    // New Game — full reset from Ch1
+    startChapter(CHAPTER.ONE, true);
+  } else {
+    // How To Play
+    howToPlayOpen=true;
+  }
+}
+
 document.addEventListener('touchstart', e=>{
-  if(gameState==='gameover' && stateTimer>700)  { startChapter(chapter); return; }
+  if(howToPlayOpen){ howToPlayOpen=false; return; }
+
+  if(gameState==='gameover' && stateTimer>700){
+    // Detect which button was tapped by vertical position
+    const cy=canvas.height/2;
+    const ty=e.changedTouches[0].clientY - canvas.getBoundingClientRect().top;
+    if(ty > cy+10 && ty < cy+50) homeMenuCursor=0;
+    else if(ty > cy+46 && ty < cy+86) homeMenuCursor=1;
+    confirmGameOver(); return;
+  }
+  if(gameState==='home'){
+    const cy=canvas.height/2;
+    const ty=e.changedTouches[0].clientY - canvas.getBoundingClientRect().top;
+    HOME_OPTS.forEach((_,i)=>{
+      const oy=cy-4+i*42;
+      if(ty>=oy-20 && ty<=oy+14){ homeMenuCursor=i; }
+    });
+    confirmHome(); return;
+  }
   if(gameState==='chaptercard' && stateTimer>1000){ startChapter(pendingChapter); return; }
 });
 // buySkill: handles both stackable and one-time skills.
@@ -1469,23 +1636,39 @@ function buySKill(idx) {
 }
 
 document.addEventListener('keydown', e=>{
+  // How To Play overlay — any key closes it
+  if(howToPlayOpen){ howToPlayOpen=false; return; }
+
   // Skill menu navigation
   if(skillMenuOpen){
     if(e.key==='ArrowRight') skillCursor=(skillCursor+1)%10;
     if(e.key==='ArrowLeft')  skillCursor=(skillCursor+9)%10;
     if(e.key==='ArrowDown')  skillCursor=(skillCursor+5)%10;
     if(e.key==='ArrowUp')    skillCursor=(skillCursor+5)%10;
-    if(e.key===' '||e.key==='Enter'){
-      buySKill(skillCursor);
-    }
+    if(e.key===' '||e.key==='Enter') buySKill(skillCursor);
     if(e.key==='c'||e.key==='C'){
-      // C to continue from skill menu
       skillMenuOpen=false; pendingChapter=CHAPTER.THREE; gameState='chaptercard'; stateTimer=0;
     }
     return;
   }
+
+  // Game over screen navigation
+  if(gameState==='gameover'){
+    if(e.key==='ArrowDown') homeMenuCursor=Math.min(homeMenuCursor+1,1);
+    if(e.key==='ArrowUp')   homeMenuCursor=Math.max(homeMenuCursor-1,0);
+    if(e.key==='Enter')     confirmGameOver();
+    return;
+  }
+
+  // Home screen navigation
+  if(gameState==='home'){
+    if(e.key==='ArrowDown') homeMenuCursor=(homeMenuCursor+1)%3;
+    if(e.key==='ArrowUp')   homeMenuCursor=(homeMenuCursor+2)%3;
+    if(e.key==='Enter')     confirmHome();
+    return;
+  }
+
   if(e.key==='Enter'){
-    if(gameState==='gameover' && stateTimer>700)   { startChapter(chapter); return; }
     if(gameState==='chaptercard' && stateTimer>1000){ startChapter(pendingChapter); return; }
   }
 });
@@ -1493,7 +1676,9 @@ document.addEventListener('keydown', e=>{
 // ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
-startChapter(CHAPTER.ONE);
+// Cold open: drop straight into Ch1 on first load.
+// Home screen only appears after the player has died at least once.
+startChapter(CHAPTER.ONE, true);
 requestAnimationFrame(ts=>{ lastTime=ts; requestAnimationFrame(loop); });
 </script>
 </body>
