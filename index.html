@@ -51,7 +51,10 @@ canvas#game { display:block; width:100%; height:100%; image-rendering:pixelated;
 <div id="game-wrapper"><canvas id="game"></canvas></div>
 <div id="controls">
   <div id="joystick-zone">
-    <div id="joystick-base"><div id="joystick-knob"></div></div>
+    <div id="joystick-base">
+      <div id="joystick-knob"></div>
+      <div style="position:absolute;bottom:-22px;left:50%;transform:translateX(-50%);color:rgba(255,214,107,0.55);font-size:9px;letter-spacing:1px;text-transform:uppercase;white-space:nowrap;pointer-events:none;">Move</div>
+    </div>
   </div>
   <div id="jump-zone">
     <canvas id="charge-canvas" width="104" height="104"></canvas>
@@ -109,7 +112,7 @@ let fogX           = -200;   // world-space X of fog right edge
 // Catapult sequence
 let catapultState  = 0;      // 0=approach, 1=load, 2=launch, 3=fly
 let catapultTimer  = 0;
-const CATAPULT_X   = 1800;   // world X of catapult
+const CATAPULT_X   = 900;    // world X of catapult
 
 // ══════════════════════════════════════════════════════════════
 //  WORLD / TERRAIN
@@ -800,8 +803,16 @@ function drawHUD(ts) {
     }
   }
 
-  // Ch2: ability reminder
-  if(chapter===CHAPTER.TWO && gameState==='playing'){
+  // PC controls hint (fades after 6s)
+  if(chapterTimer < 6000 || chapter === CHAPTER.ONE && gameState==='playing' && chapterTimer < 6000){
+    const a = Math.max(0, 1 - chapterTimer/5000);
+    if(a > 0){
+      ctx.save(); ctx.globalAlpha=a*0.65;
+      ctx.fillStyle='#fff'; ctx.font='11px Courier New'; ctx.textAlign='center';
+      ctx.fillText('← → Arrow Keys to move   |   Space / Jump button to jump', canvas.width/2, canvas.height - 12);
+      ctx.restore();
+    }
+  }
     ctx.save();
     ctx.fillStyle='rgba(160,120,255,0.6)'; ctx.font='11px Courier New'; ctx.textAlign='center';
     ctx.fillText('HOLD to charge jump · Enemies fall in pits!', canvas.width/2, 55);
@@ -820,7 +831,7 @@ function drawGameOver() {
     ctx.fillStyle='#ffd66b'; ctx.font='16px Courier New';
     ctx.fillText(`Score: ${Math.floor(score)}`,canvas.width/2,canvas.height/2+10);
     ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.font='13px Courier New';
-    ctx.fillText('Tap to try again',canvas.width/2,canvas.height/2+44);
+    ctx.fillText('Tap  /  Enter to try again',canvas.width/2,canvas.height/2+44);
   }
   ctx.restore();
 }
@@ -845,7 +856,7 @@ function drawChapterCard() {
     ctx.fillText('Pits now scar the land', canvas.width/2, canvas.height/2+30);
     ctx.fillText('Enemies fear the void', canvas.width/2, canvas.height/2+50);
     ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.font='11px Courier New';
-    ctx.fillText('Tap to continue', canvas.width/2, canvas.height/2+85);
+    ctx.fillText('Tap  /  Enter to continue', canvas.width/2, canvas.height/2+85);
   }
   ctx.restore();
 }
