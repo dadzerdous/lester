@@ -94,13 +94,25 @@ function lerp(a,b,t){ return a+(b-a)*t; }
 // ══════════════════════════════════════════════════════════════
 //  GAME STATE
 // ══════════════════════════════════════════════════════════════
-const CHAPTER = { ONE:1, TWO:2, THREE:3 };
+const CHAPTER = { ONE:1, TWO:2, THREE:3, FOUR:4 };
 
 let chapter        = CHAPTER.ONE;
 let chapterTimer   = 0;
-let gameState      = 'playing';  // 'playing' | 'catapult' | 'chaptercard' | 'gameover'
+let gameState      = 'splash';
+// gameState values:
+//   'home'        — main menu (shown after death, not on first load which auto-starts)
+//   'playing'     — normal gameplay
+//   'catapult'    — cutscene: Lester being launched
+//   'chaptercard' — between-chapter fade card
+//   'gameover'    — death screen with Continue / Home options
+// Design intent: home screen only shown AFTER first death — player is dropped
+// straight into Ch1 on first load. Keeps the cold-open feel.
 let stateTimer     = 0;
 let score          = 0;
+let homeMenuCursor = 0; // 0=Continue, 1=New Game, 2=How To Play
+let splashDone     = false; // latched after first splash dismiss
+let deathCount     = 0; // tracks if player has died at least once (gates home screen access)
+let howToPlayOpen  = false;
 let cameraX        = 0;
 let lastTime       = 0;
 
@@ -111,7 +123,7 @@ let lastTime       = 0;
 // The fog's right edge (fogX) is in world-space, compared against player.x.
 const FOG_DELAY    = 10000;  // ms before fog starts (10s — quick for testing, raise to 25s for release)
 const FOG_SPEED    = 0.7;    // px per frame at 60fps — slow creep
-let fogX           = -300;   // world-space X of fog's RIGHT edge (starts offscreen left)
+let fogX           = -800;   // world-space X of fog's RIGHT edge — far off-screen left until FOG_DELAY fires
 
 // ── Catapult (Chapter 1 exit / Chapter 2 transition) ───────
 // Design intent: catapult is the REWARD for surviving Ch1.
@@ -121,28 +133,70 @@ let fogX           = -300;   // world-space X of fog's RIGHT edge (starts offscr
 // Do NOT reset catapultPhase to 0 on trigger — that causes an infinite loop.
 let catapultPhase  = 0;      // 0=idle(pre-trigger), 1=loading, 2=launching, 3=flying
 let catapultTimer  = 0;
-const CATAPULT_X   = 900;    // world X — reachable in ~10s of walking before fog
+const CATAPULT_X   = 900;    // Ch1 catapult — reachable before fog closes in
+let activeCatapultX = CATAPULT_X; // which catapult is currently active (set at trigger time)
 
-// ── Bonfire (Chapter 2 exit / skill menu trigger) ───────────
-// Design intent: bonfire is the Ch2 equivalent of the catapult.
-// When player reaches it, the skill menu opens (souls-like rest point).
-// Skills are mysteries — shown as ? until discovered through play.
-// 10 placeholder slots. Points come from score accumulated in-run.
-// BONFIRE_X is world-space; Ch2 terrain is procedural so it's placed
-// at a fixed distance regardless of terrain layout.
-const BONFIRE_X    = 2200;   // world X of the Ch2 bonfire
-let bonfireReached = false;  // latched true once triggered, prevents re-trigger
-let pendingChapter = CHAPTER.TWO;  // which chapter we're transitioning INTO (used by drawChapterCard)
+// ── Chapter 2 catapult (Ch2 exit → Ch3) ─────────────────────
+// Design intent: Ch2 has the same exit fantasy as Ch1 — another catapult.
+// Placed far enough that the player faces pits + hopper enemy before reaching it.
+// No bonfire in Ch2 — the bonfire is the Ch3 reward.
+const CATAPULT_X2  = 2000;   // world X of the Ch2 catapult
+
+// ── Bonfire (Chapter 3 only — skill menu) ───────────────────
+// Moved to Ch3 so the skill system is a late-game reward.
+// Design intent: player discovers skills AFTER experiencing all basic mechanics.
+const CATAPULT_X3  = 2400;   // world X of the Ch3 catapult (replaces bonfire)
+// No bonfire — skill menu opens after Ch3 catapult launches
+let bonfireReached = false;  // reused as 'catapult3Reached' to prevent re-trigger
+let pendingChapter = CHAPTER.TWO;  // chapter we're transitioning INTO
 let skillMenuOpen  = false;
-// 10 mystery skill slots — fill these in as we design actual skills
-const SKILLS = Array.from({length:10}, (_,i) => ({
-  id: i,
-  name: '???',        // revealed name (keep as ??? until designed)
-  desc: '...',        // revealed description
-  cost: (i+1) * 10,  // point cost scales with slot index
-  owned: false,
-}));
-let skillPoints = 0; // awarded from score when bonfire is reached
+// 10 skill slots — only the first is designed; rest are ??? until we decide.
+// Design intent: skills are discovered by the player, not explained up front.
+// Spring Legs (slot 0): stackable charge-speed buff. Each purchase costs more.
+//   Effect applied in update() — chargeTime += dt * springLegsMultiplier.
+//   DO NOT cap stacks — the escalating cost is the natural limiter.
+// ── SKILLS — stackable stat upgrades ─────────────────────
+// Buy multiple times, cost rises 50% each stack.
+// Effect must be wired in update() or physics code.
+const BASE_SPRING_COST = 15;
+const SKILLS = [
+  { id:'spring',    name:'Spring Legs',    desc:'+10% charge speed per stack', cost:BASE_SPRING_COST, stacks:0, stackable:true  },
+  { id:'shield_str',name:'Shield Strength',desc:'+1 hit absorbed per stack',   cost:25,               stacks:0, stackable:true  },
+  { id:'???2',      name:'???',            desc:'...',                          cost:60,               stacks:0, stackable:false },
+  { id:'???3',      name:'???',            desc:'...',                          cost:80,               stacks:0, stackable:false },
+  { id:'???4',      name:'???',            desc:'...',                          cost:100,              stacks:0, stackable:false },
+];
+
+// ── UNLOCKS — one-time mechanic unlocks ────────────────────
+// Buy once to enable the mechanic. Toggleable unlocks can be turned on/off.
+// To add: push entry here + wire effect in update()/render().
+const UNLOCKS = [
+  // Toggleable unlocks
+  { id:'autorun',    name:'Auto-Run',       desc:'Lester runs automatically. Earn more score.',  cost:40,  owned:false, active:false, toggleable:true  },
+  // Stackable duration unlock — slide is free at Ch4, but duration upgrades cost SP
+  { id:'slide_dur',  name:'Slide Duration', desc:'+200ms slide per stack (base 400ms free)',     cost:35,  owned:false, active:false, toggleable:false, stacks:0, stackable:true },
+  // One-time mechanic unlocks
+  { id:'stomp',      name:'Stomp',          desc:'Land on enemies to defeat them.',               cost:50,  owned:false, active:false, toggleable:false },
+  { id:'shield',     name:'Shield',         desc:'Absorb one hit before dying.',                  cost:60,  owned:false, active:false, toggleable:false },
+  { id:'???u1',      name:'???',            desc:'...',                                            cost:120, owned:false, active:false, toggleable:false },
+];
+
+let skillPoints = 0;
+let menuTab     = 0;  // 0=SKILLS, 1=UNLOCKS
+let skillCursor = 0;
+
+function hasUnlock(id){ return UNLOCKS.find(u=>u.id===id)?.owned ?? false; }
+function getUnlock(id){ return UNLOCKS.find(u=>u.id===id); }
+
+function getSpringLegsMultiplier() {
+  const sk = SKILLS.find(s=>s.id==='spring');
+  return 1 + (sk ? sk.stacks : 0) * 0.10;
+}
+function getShieldStrength() {
+  const sk = SKILLS.find(s=>s.id==='shield_str');
+  return sk ? sk.stacks : 0;
+}
+
 
 // ── Persistent scoring ─────────────────────────────────────
 // Design intent: highScore rewards skill, totalScore rewards dedication.
@@ -170,36 +224,91 @@ function buildTerrain() {
   terrainHead = 0;
 
   if (chapter === CHAPTER.ONE) {
-    // Ch1: flat ground — player needs to learn movement and tap-jump before pits exist.
-    // The catapult sits at CATAPULT_X as the exit goal.
+    // Ch1: flat ground only — player learns movement + tap-jump before any hazards.
+    // Catapult at CATAPULT_X is the exit. Fog wall creates urgency.
     terrain.push({ type:'ground', x:0, w:CATAPULT_X + 600 });
     terrainHead = CATAPULT_X + 600;
   } else if (chapter === CHAPTER.TWO) {
-    // Ch2: procedural ground + pits + platforms. Bonfire at BONFIRE_X is the exit.
-    terrain.push({ type:'ground', x:0, w:600 });
-    terrainHead = 600;
-    genTerrain(3000);
-  } else {
-    // Ch3: TBD — for now an infinite procedural runner, harder than Ch2.
-    // Design intent: this is the unknown. Keep it as a stub until we decide
-    // what Lester's growth means mechanically at this stage.
+    // Ch2: pits introduced, NO platforms (platforms are Ch3's new mechanic).
+    // New enemy: hopper. Exit is a second catapult at CATAPULT_X2.
+    // Charge jump mechanic discovered organically here.
+    terrain.push({ type:'ground', x:0, w:500 });
+    terrainHead = 500;
+    genTerrain(CATAPULT_X2 + 600);
+  } else if (chapter === CHAPTER.THREE) {
+    // Ch3: pits + platforms + Bounder. Catapult exit at CATAPULT_X3.
     terrain.push({ type:'ground', x:0, w:400 });
     terrainHead = 400;
-    genTerrain(3000);
+    genTerrain(CATAPULT_X3 + 600);
+  } else {
+    // Ch4: hardest tier. Large pits with stepping stones, Swooper debuts, slide available.
+    // Infinite runner — no fixed exit yet. Terrain generates ahead of the player.
+    terrain.push({ type:'ground', x:0, w:400 });
+    terrainHead = 400;
+    genTerrain(4000);
   }
 }
 
 function genTerrain(upTo) {
+  // Design intent for fair pit placement:
+  // 1. NEVER place a pit immediately after another pit — player needs ground to land and re-charge.
+  // 2. Ground segment AFTER a pit must be wide enough to land + crouch + jump again.
+  //    MIN_LANDING = 280px — enough for Lester to touch down, decelerate, and charge jump.
+  // 3. Ground segments BEFORE a pit can be shorter — 200px min is fine since player is already running.
+  // 4. Pit width is capped so even a minimal charge jump (tap) can clear it.
+  //    MAX_PIT at full diff = 230px. A tap jump covers ~260px at walking speed — always clearable.
+  const MIN_LANDING = 280;  // minimum ground after a pit — always enough to land + re-jump
+  const MIN_GROUND  = 200;
+  const MAX_GROUND  = 360;
+
+  // Per-chapter pit sizing:
+  // Ch2: small  (90–120px)  — tap jump clears easily, no ledge needed
+  // Ch3: medium (130–160px) — needs a committed jump, still clearable without ledge
+  // Ch4: large  (170–210px) — stepping stone in middle is the intended path,
+  //                           full charge jump can still clear it as a skill expression
+  const PIT_MIN = chapter===CHAPTER.TWO ? 90  : chapter===CHAPTER.THREE ? 130 : 170;
+  const PIT_MAX = chapter===CHAPTER.TWO ? 120 : chapter===CHAPTER.THREE ? 160 : 210;
+
+  let lastWasPit = false;
+
   while (terrainHead < upTo) {
     const diff = Math.min(terrainHead / 5000, 1);
-    if (chapter === CHAPTER.TWO && Math.random() < 0.30 + diff*0.18) {
-      const pw = irnd(100, 170 + diff*80);
+    const pitChance = (chapter >= CHAPTER.TWO) ? 0.30 + diff*0.15 : 0;
+    const canPit = !lastWasPit && Math.random() < pitChance;
+
+    if (canPit) {
+      const pw = irnd(PIT_MIN, PIT_MAX);
       terrain.push({ type:'pit', x:terrainHead, w:pw });
+
+      // Stepping stone: Ch4+ large pits only — centred in the pit, narrow enough
+      // to require a second jump, wide enough to actually land on.
+      // Design intent: the ledge is the intended path for large pits.
+      // A maxed charge jump can still clear it — rewarding skilled players.
+      if(chapter >= CHAPTER.FOUR && pw > 160){
+        const gy = GY();
+        const stoneW = irnd(44, 58);
+        const stoneX = terrainHead + pw/2 - stoneW/2;
+        platforms.push({
+          x: stoneX,
+          y: gy - irnd(62, 82),
+          w: stoneW, h: 12,
+          style: 'stone',
+          isStepping: true,
+        });
+      }
+
       terrainHead += pw;
+      lastWasPit = true;
     } else {
-      const gw = irnd(200, 380);
+      // Ground segment: wider after a pit to guarantee safe landing room
+      const minW = lastWasPit ? MIN_LANDING : MIN_GROUND;
+      const gw = irnd(minW, MAX_GROUND);
       terrain.push({ type:'ground', x:terrainHead, w:gw });
-      if (chapter === CHAPTER.TWO && Math.random() < 0.55) {
+
+      // Platforms ONLY in Ch3 — this is their debut mechanic.
+      // Design intent: player needs to discover pits + hopper in Ch2 without
+      // platform complexity. Platforms in Ch3 add vertical play.
+      if (chapter === CHAPTER.THREE && Math.random() < 0.55) {
         const gy = GY();
         const plw=irnd(80,160), plh=14;
         const plx=terrainHead+irnd(24,gw-plw-24);
@@ -212,6 +321,7 @@ function genTerrain(upTo) {
         }
       }
       terrainHead += gw;
+      lastWasPit = false;
     }
   }
 }
@@ -228,16 +338,17 @@ function isGroundAt(worldX) {
 // ══════════════════════════════════════════════════════════════
 const PW=28, PH=48;
 const player = {
-  x:200, y:0, vx:0, vy:0,
+  x:80, y:0, vx:0, vy:0,   // start near left edge of world so progress bar dot starts left
   grounded:false, facing:1,
   walkFrame:0,
   crouching:false, chargeTime:0, maxCharge:650, jumpQueued:false,
-  // catapult fly
+  sliding:false,   // true while slide is active (down+moving on ground)
+  slideTimer:0,    // slide duration limiter (max 600ms per slide)
   flying:false,
 };
 
 function resetPlayer() {
-  player.x=200; player.y=GY()-PH/2;
+  player.x=80; player.y=GY()-PH/2;
   player.vx=0; player.vy=0;
   player.grounded=false; player.crouching=false;
   player.chargeTime=0; player.jumpQueued=false;
@@ -250,17 +361,47 @@ function resetPlayer() {
 const enemies = [];
 let eSpawnTimer = 0;
 
+// ── Creature roster ────────────────────────────────────────
+// label = internal dispatch key (used in draw switch + update)
+// name  = display name shown briefly on spawn
+// Chapter assignment: controlled by which ETYPES_CHx array the entry lives in.
+// To move a creature: cut its row, paste into the target array.
+// To add a creature: add row here + drawXxx() + case in drawEnemies dispatch.
 const ETYPES_CH1 = [
-  {w:32,h:20,spd:1.6,label:'crab',  col:'#e84c3d',acc:'#ff7c6e'},
+  // Ch1: Pincher only. Low, wide, predictable. Pure jump-timing tutorial.
+  {w:32,h:20,spd:1.6,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
 ];
 const ETYPES_CH2 = [
-  {w:32,h:20,spd:1.8,label:'crab',  col:'#e84c3d',acc:'#ff7c6e'},
-  {w:18,h:42,spd:1.4,label:'totem', col:'#8b6914',acc:'#c9a227'},
-  {w:28,h:26,spd:1.2,label:'turtle',col:'#2e8b57',acc:'#52c97a'},
+  // Ch2: Pincher (faster) + Idol introduced.
+  // Idol is tall and narrow — teaches that not all threats have the same clearance height.
+  {w:32,h:20,spd:1.8,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.4,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+];
+const ETYPES_CH3 = [
+  // Ch3: Pincher + Idol return. Shellback + Bounder introduced.
+  // Bounder's hop combined with pits/platforms makes Ch3 the first truly complex chapter.
+  {w:32,h:20,spd:2.0,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.6,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+  {w:28,h:26,spd:1.4,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
+  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
+  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'}, // double weight
+];
+const ETYPES_CH4 = [
+  // Ch4: All prior creatures + Swooper introduced.
+  // Swooper is a flying enemy that dives down — requires slide or timing to avoid.
+  // Slide (hold-down while running) is unlocked in Ch4 as the new mechanic.
+  {w:32,h:20,spd:2.2,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.8,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+  {w:28,h:26,spd:1.6,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
+  {w:24,h:28,spd:2.0,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
+  {w:30,h:22,spd:2.0,label:'swooper', name:'Swooper',  col:'#1a6b8a',acc:'#4dc8f0'},
 ];
 
 function getETypes() {
-  return chapter === CHAPTER.ONE ? ETYPES_CH1 : ETYPES_CH2;
+  if(chapter===CHAPTER.ONE)  return ETYPES_CH1;
+  if(chapter===CHAPTER.TWO)  return ETYPES_CH2;
+  if(chapter===CHAPTER.THREE)return ETYPES_CH3;
+  return ETYPES_CH4;
 }
 
 function spawnEnemy() {
@@ -269,14 +410,25 @@ function spawnEnemy() {
   const spawnX = player.x + canvas.width * 0.65 + rnd(0, 200);
   // Only spawn on ground
   if (!isGroundAt(spawnX)) return;
+  const isSwooper = t.label==='swooper';
+  // Swooper spawns near the top of the canvas, flies horizontally, then dives.
+  // baseY is the hover altitude — it only dives down to player's HEAD level, not feet.
+  // This means: jump to dodge (get above it) OR slide (stay below its path).
+  const spawnY = isSwooper ? 40 + rnd(0, 30) : GY() - t.h/2;
   enemies.push({
     x: spawnX,
-    y: GY() - t.h/2,
+    y: spawnY,
     w:t.w, h:t.h, spd: t.spd + score*0.003,
-    label:t.label, col:t.col, acc:t.acc,
+    label:t.label, name:t.name, col:t.col, acc:t.acc,
     anim: rnd(0, Math.PI*2),
-    grounded: true,
+    grounded: !isSwooper,
     vy: 0,
+    hopTimer: rnd(0, 1200),   // stagger hopper timing so they don't all bounce in sync
+    swoopTimer: rnd(800,2000), // ms before first dive
+    swooping: false,           // true while actively diving
+    locked:   false,           // true once swooper has reached its target height and flies flat
+    baseY: spawnY,             // hover altitude before locking
+    nameTimer: 1800,
   });
 }
 
@@ -292,6 +444,7 @@ function updateEnemies(dt) {
     const e = enemies[i];
     e.x  -= e.spd;
     e.anim += dt * 0.004;
+    if(e.nameTimer > 0) e.nameTimer -= dt;
 
     // Gravity for enemies (so they fall into pits)
     if (!e.grounded) e.vy += 0.55;
@@ -301,18 +454,57 @@ function updateEnemies(dt) {
     const eGround = isGroundAt(e.x);
     if (e.y + e.h/2 >= gy) {
       if (!eGround) {
-        // fell into pit — remove
         enemies.splice(i, 1);
-        score += 15; // bonus for luring enemy into pit
+        // No score for pit kills — stomp kills will be added later.
         continue;
       } else {
         e.y = gy - e.h/2; e.vy = 0; e.grounded = true;
       }
     } else {
-      // Check if walked off edge
-      if (eGround === false) e.grounded = false;
-      // Re-check: if currently "grounded" but ground disappeared
       if (e.grounded && !isGroundAt(e.x)) e.grounded = false;
+    }
+
+    // Hopper hop logic — periodic small bounce.
+    // Design intent: hop interval ~1.5s, upward velocity is ~40% of player min jump.
+    // This makes the hopper's effective height variable and unpredictable.
+    if(e.label==='hopper' && e.grounded){
+      e.hopTimer += dt;
+      if(e.hopTimer > 1500){
+        e.vy = -5.5;  // small hop — enough to be awkward, not enough to sail over pits
+        e.grounded = false;
+        e.hopTimer = 0;
+      }
+    }
+
+    // ── Swooper flight + dive logic ──────────────────────────
+    // Swooper spawns near the top of the canvas, dives toward player HEAD level.
+    // Pull-out happens at player head height — not ground.
+    // Player counters: jump OVER the swoop path, or SLIDE under it.
+    if(e.label === 'swooper'){
+      if(!e.locked){
+        // Hovering phase: wait then dive
+        e.swoopTimer -= dt;
+        if(e.swoopTimer <= 0 && !e.swooping){
+          e.swooping = true;
+          e.vy = 5; // dive speed
+        }
+        if(e.swooping){
+          e.y += e.vy;
+          // Lock at player head height (or just above ground if player is jumping high)
+          const targetY = Math.min(player.y - PH/2, GY() - e.h - 8);
+          if(e.y >= targetY){
+            e.y = targetY;  // snap to exact locked height
+            e.locked = true; // now frozen at this Y forever — just flies left
+            e.swooping = false;
+          }
+        } else {
+          // Gentle hover before dive
+          e.y = e.baseY + Math.sin(e.anim * 2) * 4;
+        }
+      }
+      // Once locked: e.y stays constant — swooper flies flat at that height.
+      // Player must be above it (jumped) or below it (slid) when it passes.
+      // No ground/pit physics for swooper ever.
     }
 
     // Remove if far behind or in catapult zone
@@ -324,7 +516,7 @@ function updateEnemies(dt) {
       const ph = player.crouching ? PH*0.6 : PH;
       if (player.x+PW/2-m > e.x-e.w/2 && player.x-PW/2+m < e.x+e.w/2 &&
           player.y+ph/2-m > e.y-e.h/2 && player.y-ph/2+m < e.y+e.h/2) {
-        gameState='gameover'; stateTimer=0; saveScores();
+        gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores();
       }
     }
   }
@@ -336,7 +528,7 @@ function updateEnemies(dt) {
 const jBase = document.getElementById('joystick-base');
 const jKnob = document.getElementById('joystick-knob');
 const jZone = document.getElementById('joystick-zone');
-const J = { active:false, tid:null, bx:0, by:0, dx:0, maxR:42 };
+const J = { active:false, tid:null, bx:0, by:0, dx:0, dy:0, maxR:42 };
 
 jZone.addEventListener('touchstart',e=>{
   e.preventDefault(); if(J.active) return;
@@ -358,6 +550,7 @@ function moveJ(cx,cy){
   const dist=Math.sqrt(dx*dx+dy*dy);
   if(dist>J.maxR){dx=dx/dist*J.maxR; dy=dy/dist*J.maxR;}
   J.dx=dx/J.maxR;
+  J.dy=dy/J.maxR;  // track vertical for slide detection
   jKnob.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;
 }
 
@@ -551,8 +744,93 @@ function drawPlatforms() {
 // ══════════════════════════════════════════════════════════════
 //  CATAPULT
 // ══════════════════════════════════════════════════════════════
-function drawCatapult(ts) {
-  const sx = wx(CATAPULT_X);
+// Draw hopper enemy — small alien creature that bounces periodically.
+// Design intent: wide body, big eyes, stubby legs. Cute but threatening.
+// The hop squash/stretch gives visual feedback of when it's about to jump.
+function drawHopper(e) {
+  const squash = e.grounded ? 1 : 0.7; // squish when on ground, stretch mid-air
+  const stretch = e.grounded ? 1 : 1.3;
+  ctx.save();
+  ctx.scale(squash, stretch);
+  // Body — round, wide, alien purple
+  ctx.fillStyle=e.col;
+  ctx.beginPath(); ctx.ellipse(0,0,e.w/2,e.h/2*0.8,0,0,Math.PI*2); ctx.fill();
+  // Belly highlight
+  ctx.fillStyle=e.acc;
+  ctx.beginPath(); ctx.ellipse(0,3,e.w/2*0.55,e.h/2*0.4,0,0,Math.PI*2); ctx.fill();
+  // Eyes — big, expressive
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.ellipse(-6,-5,5,6,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( 6,-5,5,6,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#1a0030';
+  ctx.beginPath(); ctx.ellipse(-6,-5,2.5,3.5,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( 6,-5,2.5,3.5,0,0,Math.PI*2); ctx.fill();
+  // Shine
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  ctx.beginPath(); ctx.ellipse(-7,-7,1.2,1.5,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( 5,-7,1.2,1.5,0,0,Math.PI*2); ctx.fill();
+  // Stubby legs (visible when on ground)
+  if(e.grounded){
+    ctx.fillStyle=e.col;
+    ctx.beginPath(); ctx.ellipse(-7,e.h/2*0.6,4,3,0.3,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse( 7,e.h/2*0.6,4,3,-0.3,0,Math.PI*2); ctx.fill();
+  }
+  // Antenna
+  ctx.strokeStyle=e.acc; ctx.lineWidth=1.5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-4,-e.h/2*0.8); ctx.lineTo(-7,-e.h/2*0.8-8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo( 4,-e.h/2*0.8); ctx.lineTo( 7,-e.h/2*0.8-8); ctx.stroke();
+  ctx.fillStyle=e.acc;
+  ctx.beginPath(); ctx.arc(-7,-e.h/2*0.8-9,2.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 7,-e.h/2*0.8-9,2.5,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// drawCatapult: draws catapult at given world X.
+// Reused for both Ch1 (CATAPULT_X) and Ch2 (CATAPULT_X2).
+// Swooper — a winged creature that flies and dives.
+// Design intent: thin horizontal silhouette so slide (low profile) clearly counters it.
+// Wings animate with a flap cycle; body tilts during dive.
+function drawSwooper(e) {
+  const diving = e.swooping;
+  const tilt = diving ? 0.5 : -0.1;
+  ctx.save();
+  ctx.rotate(tilt);
+
+  // Body — sleek, horizontal
+  ctx.fillStyle=e.col;
+  ctx.beginPath(); ctx.ellipse(0,0,e.w/2,e.h/2,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=e.acc;
+  ctx.beginPath(); ctx.ellipse(-2,-2,e.w/3,e.h/3,-0.2,0,Math.PI*2); ctx.fill();
+
+  // Wings — animated flap
+  const flapAngle = diving ? 0.3 : Math.sin(e.anim*4)*0.5;
+  ctx.fillStyle=e.col;
+  // Left wing
+  ctx.save(); ctx.translate(-e.w/2+4, 0); ctx.rotate(-flapAngle);
+  ctx.beginPath(); ctx.ellipse(-10,0,14,5,-0.2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  // Right wing
+  ctx.save(); ctx.translate(e.w/2-4, 0); ctx.rotate(flapAngle);
+  ctx.beginPath(); ctx.ellipse(10,0,14,5,0.2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // Eyes — beady, forward-facing
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.ellipse(e.w/2-5,-3,3,3,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#0a1a2a';
+  ctx.beginPath(); ctx.ellipse(e.w/2-4,-3,1.5,1.5,0,0,Math.PI*2); ctx.fill();
+
+  // Beak
+  ctx.fillStyle=e.acc;
+  ctx.beginPath();
+  ctx.moveTo(e.w/2+2,-1); ctx.lineTo(e.w/2+8,0); ctx.lineTo(e.w/2+2,2);
+  ctx.closePath(); ctx.fill();
+
+  ctx.restore();
+}
+
+function drawCatapult(ts, worldX) {
+  const sx = wx(worldX);
   const gy = GY();
   if(sx < -200 || sx > canvas.width+200) return;
 
@@ -594,8 +872,8 @@ function drawCatapult(ts) {
 
   // "LAUNCH" sign near catapult
   if(catapultPhase===0){
-    const dist = CATAPULT_X - player.x;
-    if(dist < 500){
+    const dist = worldX - player.x;
+    if(dist < 500 && dist > 0){
       const alpha = Math.max(0, 1-(dist-100)/300);
       ctx.save();
       ctx.globalAlpha=alpha*Math.abs(Math.sin(ts*0.003));
@@ -614,11 +892,22 @@ function drawEnemies() {
     const sx=wx(e.x); if(sx<-100||sx>canvas.width+100) continue;
     const bob = e.grounded ? Math.sin(e.anim)*2 : 0;
     ctx.save(); ctx.translate(sx,e.y+bob);
-    if(e.label==='crab')       drawCrab(e);
-    else if(e.label==='totem') drawTotem(e);
-    else                       drawTurtle(e);
+    if(e.label==='crab')          drawCrab(e);
+    else if(e.label==='totem')    drawTotem(e);
+    else if(e.label==='hopper')   drawHopper(e);
+    else if(e.label==='swooper')  drawSwooper(e);
+    else                          drawTurtle(e);
+    // Exclamation mark — always shown
     ctx.fillStyle='rgba(255,220,100,0.85)'; ctx.font='bold 12px Courier New'; ctx.textAlign='center';
     ctx.fillText('!',0,-e.h/2-10);
+    // Creature name fades in on spawn, then disappears
+    if(e.nameTimer > 0){
+      const na = Math.min(e.nameTimer/400, 1) * Math.min(e.nameTimer, 400)/400;
+      ctx.save(); ctx.globalAlpha=na;
+      ctx.fillStyle='#fff'; ctx.font='9px Courier New'; ctx.textAlign='center';
+      ctx.fillText(e.name, 0, -e.h/2-22);
+      ctx.restore();
+    }
     ctx.restore();
   }
 }
@@ -714,6 +1003,34 @@ function drawLester(wf, moving, state) {
     ctx.restore();
   }
 
+  // Override whole body for slide — Lester goes flat, legs extended forward
+  if(state==='slide'){
+    ctx.save();
+    ctx.translate(0,-8); // lower to ground
+    // Body horizontal
+    ctx.fillStyle='#ddeeff'; ctx.beginPath(); ctx.ellipse(4,-10,16,7,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#aaccee'; ctx.fillRect(-4,-14,8,6);
+    // Backpack flattened
+    ctx.fillStyle='#c0392b'; ctx.beginPath(); ctx.ellipse(-6,-10,8,5,0,0,Math.PI*2); ctx.fill();
+    // Legs out front
+    ctx.strokeStyle='#4a36a0'; ctx.lineWidth=7; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(6,-4); ctx.lineTo(22,-4); ctx.stroke();
+    ctx.fillStyle='#f5f5f5'; ctx.beginPath(); ctx.ellipse(24,-4,7,3.5,0,0,Math.PI*2); ctx.fill();
+    // Head down
+    ctx.fillStyle='#f0c890'; ctx.beginPath(); ctx.ellipse(2,-18,8,9,0.3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#5c3d1e'; ctx.beginPath(); ctx.ellipse(2,-25,7,5,0.3,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#333'; ctx.lineWidth=1.5;
+    ctx.strokeRect(-4,-21,6,4); ctx.strokeRect(2,-21,6,4);
+    ctx.fillStyle='#333';
+    ctx.beginPath(); ctx.ellipse(-1,-19,1.5,1.5,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(5,-19,1.5,1.5,0,0,Math.PI*2); ctx.fill();
+    // Dust puff
+    ctx.fillStyle='rgba(200,180,255,0.25)';
+    ctx.beginPath(); ctx.ellipse(-10,-3,10,5,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    return; // skip normal upper body draw below
+  }
+
   // ── Upper body (torso + backpack + arms + head) ──
   // Single translate groups everything so bob moves them all together
   ctx.save();
@@ -777,35 +1094,40 @@ function drawLester(wf, moving, state) {
 //  FOG WALL DRAWING
 // ══════════════════════════════════════════════════════════════
 function drawFog() {
-  if(chapter !== CHAPTER.ONE) return;
-  if(chapterTimer < FOG_DELAY && fogX < -150) return;
+  // Fog appears on every chapter — always chasing Lester.
+  if(fogX < cameraX - canvas.width * 0.5) return;
 
+  // fogX = RIGHT edge of the fog wall in world-space.
+  // The fog body extends leftward from there (off-screen left).
+  // sx = screen-space position of the fog's right edge.
   const sx = wx(fogX);
   if(sx > canvas.width) return;
 
-  // Ominous fog wall
-  const grd = ctx.createLinearGradient(sx-80, 0, sx+40, 0);
-  grd.addColorStop(0, 'rgba(60,0,80,0)');
-  grd.addColorStop(0.5,'rgba(120,0,160,0.6)');
-  grd.addColorStop(0.8,'rgba(200,20,220,0.85)');
-  grd.addColorStop(1, 'rgba(255,100,255,0.95)');
-  ctx.fillStyle=grd;
-  ctx.fillRect(sx-80, 0, 120+canvas.width-Math.max(sx-80,0), canvas.height);
+  // Gradient: fully opaque on the left, feathering to transparent at the right edge (sx).
+  // This means the solid fog wall is always to the LEFT of sx.
+  const feather = 80; // px of soft leading edge
+  const grd = ctx.createLinearGradient(sx - feather, 0, sx, 0);
+  grd.addColorStop(0, 'rgba(200,20,220,0.95)');
+  grd.addColorStop(0.6, 'rgba(150,0,180,0.8)');
+  grd.addColorStop(1, 'rgba(60,0,80,0)');
+  ctx.fillStyle = grd;
+  // Fill from left edge of screen to fogX (right edge), plus the feather
+  ctx.fillRect(0, 0, sx, canvas.height);
 
-  // Swirling tendrils
-  const t = Date.now()*0.001;
-  for(let i=0;i<8;i++){
+  // Swirling tendrils near the leading edge
+  const t = Date.now() * 0.001;
+  for(let i = 0; i < 8; i++){
     const ty = (i/8)*canvas.height + Math.sin(t*1.2+i)*30;
-    const tx = sx + Math.sin(t*0.8+i*1.3)*20 - 10;
+    const tx = sx - 20 + Math.sin(t*0.8+i*1.3)*20;
     const tg = ctx.createRadialGradient(tx,ty,0,tx,ty,40);
     tg.addColorStop(0,'rgba(255,120,255,0.35)');
     tg.addColorStop(1,'rgba(255,120,255,0)');
     ctx.fillStyle=tg; ctx.beginPath(); ctx.arc(tx,ty,40,0,Math.PI*2); ctx.fill();
   }
 
-  // Warning text
+  // RUN! warning when fog is within 300px of player
   if(chapterTimer > FOG_DELAY){
-    const playerDist = fogX - player.x; // how far fog is from player
+    const playerDist = player.x - fogX;
     const dangerAlpha = Math.max(0, Math.min(1, 1 - playerDist/300));
     if(dangerAlpha > 0){
       ctx.save();
@@ -821,127 +1143,269 @@ function drawFog() {
 //  HUD / UI
 // ══════════════════════════════════════════════════════════════
 // ══════════════════════════════════════════════════════════════
-//  BONFIRE DRAWING (Chapter 2 exit)
-// ══════════════════════════════════════════════════════════════
-function drawBonfire(ts) {
-  if(chapter !== CHAPTER.TWO) return;
-  const sx = wx(BONFIRE_X);
-  if(sx < -100 || sx > canvas.width+100) return;
-  const gy = GY();
-  const t = ts * 0.001;
-
-  // Stone ring
-  ctx.save();
-  ctx.translate(sx, gy);
-  // Stones
-  for(let i=0;i<8;i++){
-    const ang = (i/8)*Math.PI*2;
-    const rx=Math.cos(ang)*14, ry=Math.sin(ang)*5;
-    ctx.fillStyle='#5a3d2a'; ctx.beginPath(); ctx.ellipse(rx,ry-2,5,4,0,0,Math.PI*2); ctx.fill();
-  }
-  // Embers / glow
-  const flicker = 0.7+0.3*Math.sin(t*7.3);
-  const grd=ctx.createRadialGradient(0,-18,0,0,-8,32*flicker);
-  grd.addColorStop(0,'rgba(255,200,80,0.9)');
-  grd.addColorStop(0.4,'rgba(255,100,20,0.6)');
-  grd.addColorStop(1,'rgba(255,50,0,0)');
-  ctx.fillStyle=grd; ctx.fillRect(-36,-50,72,60);
-  // Flame tongues
-  for(let i=0;i<4;i++){
-    const fx=Math.sin(t*3.1+i*1.4)*6;
-    const fh=14+Math.sin(t*4.7+i)*6;
-    ctx.fillStyle=`rgba(255,${140+i*20},20,${0.7-i*0.1})`;
-    ctx.beginPath();
-    ctx.moveTo(fx-5,-10); ctx.quadraticCurveTo(fx,-10-fh,fx+5,-10);
-    ctx.closePath(); ctx.fill();
-  }
-  // Ambient light on ground
-  ctx.fillStyle=`rgba(255,120,20,${0.08*flicker})`;
-  ctx.beginPath(); ctx.ellipse(0,0,60,12,0,0,Math.PI*2); ctx.fill();
-  ctx.restore();
-}
-
-// ══════════════════════════════════════════════════════════════
-//  SKILL MENU (shown when bonfire is reached)
-// ══════════════════════════════════════════════════════════════
+//  SKILL MENU
 // Design intent: 10 mystery slots shown as ?.
 // Player spends skill points earned from score.
 // All slots start as ??? — skills are revealed/named as we design them.
-// This is the souls-like "level up at bonfire" moment.
+// This is the souls-like "level up" moment after clearing Ch3.
 // DO NOT reveal skill names here until they are designed and intentional.
-let skillCursor = 0; // which skill slot is highlighted
+// ══════════════════════════════════════════════════════════════
+// skillCursor declared in constants above
 
 function drawSkillMenu() {
   if(!skillMenuOpen) return;
   const cx=canvas.width/2, cy=canvas.height/2;
-
-  // Dark overlay
   ctx.save();
-  ctx.fillStyle='rgba(4,1,12,0.92)'; ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // Bonfire glow behind menu
-  const grd=ctx.createRadialGradient(cx,cy+60,0,cx,cy+60,220);
-  grd.addColorStop(0,'rgba(255,120,20,0.18)'); grd.addColorStop(1,'rgba(255,120,20,0)');
+  // Dark overlay + glow
+  ctx.fillStyle='rgba(4,1,12,0.94)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  const grd=ctx.createRadialGradient(cx,cy,0,cx,cy,220);
+  grd.addColorStop(0,'rgba(100,60,200,0.2)'); grd.addColorStop(1,'rgba(100,60,200,0)');
   ctx.fillStyle=grd; ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // Title
-  ctx.fillStyle='rgba(255,160,60,0.9)'; ctx.font='bold 16px Courier New'; ctx.textAlign='center';
-  ctx.fillText('∿  BONFIRE  ∿', cx, cy-120);
-  ctx.fillStyle='rgba(200,180,255,0.6)'; ctx.font='11px Courier New';
-  ctx.fillText(`Skill Points: ${skillPoints}`, cx, cy-100);
+  // Title + SP
+  ctx.fillStyle='rgba(200,180,255,0.9)'; ctx.font='bold 15px Courier New'; ctx.textAlign='center';
+  ctx.fillText('✦  ADVANCEMENT  ✦', cx, cy-138);
+  ctx.fillStyle='#ffd66b'; ctx.font='bold 13px Courier New';
+  ctx.fillText(`SP: ${skillPoints}`, cx, cy-118);
 
-  // 10 skill slots in two rows of 5
-  const slotW=52, slotH=52, gap=10;
-  const totalW=5*(slotW+gap)-gap;
-  const startX=cx-totalW/2;
+  // Tabs: SKILLS | UNLOCKS
+  const tabs=['SKILLS','UNLOCKS'];
+  const tabW=100, tabH=28, tabGap=8;
+  const tabStartX=cx-(tabs.length*(tabW+tabGap)-tabGap)/2;
+  tabs.forEach((tab,i)=>{
+    const tx=tabStartX+i*(tabW+tabGap), ty=cy-102;
+    const active=menuTab===i;
+    ctx.fillStyle=active?'rgba(167,139,250,0.35)':'rgba(255,255,255,0.05)';
+    ctx.beginPath(); ctx.roundRect(tx,ty,tabW,tabH,5); ctx.fill();
+    ctx.strokeStyle=active?'rgba(167,139,250,0.9)':'rgba(255,255,255,0.15)';
+    ctx.lineWidth=active?2:1;
+    ctx.beginPath(); ctx.roundRect(tx,ty,tabW,tabH,5); ctx.stroke();
+    ctx.fillStyle=active?'#fff':'rgba(255,255,255,0.4)';
+    ctx.font=`${active?'bold ':''}11px Courier New`; ctx.textAlign='center';
+    ctx.fillText(tab, tx+tabW/2, ty+tabH/2+4);
+  });
 
-  SKILLS.forEach((sk,i)=>{
-    const col=i%5, row=Math.floor(i/5);
-    const sx2=startX+col*(slotW+gap);
-    const sy=cy-76+row*(slotH+gap);
-    const isHover=(i===skillCursor);
-    const canAfford=skillPoints>=sk.cost;
+  // Item list for active tab
+  const items = menuTab===0 ? SKILLS : UNLOCKS;
+  const rowH=46, listStartY=cy-64, listW=canvas.width*0.82;
+  const listX=cx-listW/2;
 
-    // Slot background
-    ctx.fillStyle=sk.owned ? 'rgba(167,139,250,0.3)' :
-                  isHover && canAfford ? 'rgba(255,160,60,0.2)' :
-                  'rgba(255,255,255,0.05)';
-    ctx.beginPath(); ctx.roundRect(sx2,sy,slotW,slotH,6); ctx.fill();
+  items.forEach((item,i)=>{
+    const iy=listStartY+i*rowH;
+    if(iy>cy+100) return; // clip overflow
+    const isHov=skillCursor===i;
+    const bought=menuTab===0 ? item.stacks>0 : item.owned;
+    const canAfford=skillPoints>=item.cost;
 
-    // Border
-    ctx.strokeStyle=sk.owned ? 'rgba(167,139,250,0.7)' :
-                    isHover ? 'rgba(255,160,60,0.8)' :
-                    'rgba(255,255,255,0.12)';
-    ctx.lineWidth=isHover?2:1;
-    ctx.beginPath(); ctx.roundRect(sx2,sy,slotW,slotH,6); ctx.stroke();
+    // Row bg
+    ctx.fillStyle=isHov?'rgba(167,139,250,0.15)':bought?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.2)';
+    ctx.beginPath(); ctx.roundRect(listX,iy,listW,rowH-4,5); ctx.fill();
+    ctx.strokeStyle=isHov?'rgba(167,139,250,0.7)':bought?'rgba(167,139,250,0.25)':'rgba(255,255,255,0.08)';
+    ctx.lineWidth=isHov?1.5:1;
+    ctx.beginPath(); ctx.roundRect(listX,iy,listW,rowH-4,5); ctx.stroke();
 
-    // Icon — ? for mystery, ✦ if owned
-    ctx.fillStyle=sk.owned?'#a78bfa':canAfford?'rgba(255,255,255,0.6)':'rgba(255,255,255,0.2)';
-    ctx.font=`bold 22px Courier New`; ctx.textAlign='center';
-    ctx.fillText(sk.owned?'✦':'?', sx2+slotW/2, sy+slotH/2+8);
+    // Name
+    const nameKnown=item.name!=='???';
+    ctx.fillStyle=bought?'#a78bfa':nameKnown&&canAfford?'#fff':'rgba(255,255,255,0.35)';
+    ctx.font=`${isHov?'bold ':''}12px Courier New`; ctx.textAlign='left';
+    ctx.fillText(item.name, listX+12, iy+16);
 
-    // Cost badge
-    if(!sk.owned){
-      ctx.fillStyle=canAfford?'rgba(255,214,107,0.7)':'rgba(255,255,255,0.2)';
-      ctx.font='9px Courier New';
-      ctx.fillText(`${sk.cost}sp`, sx2+slotW/2, sy+slotH-5);
+    // Desc
+    ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='10px Courier New';
+    ctx.fillText(bought&&item.desc!=='...' ? item.desc : nameKnown?item.desc:'???', listX+12, iy+30);
+
+    // Right side: cost or status
+    ctx.textAlign='right';
+    if(menuTab===0){
+      // Skill: show stacks and next cost
+      if(item.stacks>0){
+        ctx.fillStyle='#a78bfa'; ctx.font='bold 10px Courier New';
+        ctx.fillText(`x${item.stacks}  →  ${item.cost}sp`, listX+listW-10, iy+16);
+      } else {
+        ctx.fillStyle=canAfford?'#ffd66b':'rgba(255,255,255,0.25)'; ctx.font='10px Courier New';
+        ctx.fillText(`${item.cost} sp`, listX+listW-10, iy+16);
+      }
+    } else {
+      // Unlock: show status
+      if(item.owned){
+        const status=item.toggleable?(item.active?'ON ✓':'OFF'):'✓';
+        ctx.fillStyle=item.active?'#52c97a':'rgba(255,255,255,0.4)'; ctx.font='bold 10px Courier New';
+        ctx.fillText(status, listX+listW-10, iy+16);
+      } else {
+        ctx.fillStyle=canAfford?'#ffd66b':'rgba(255,255,255,0.25)'; ctx.font='10px Courier New';
+        ctx.fillText(`${item.cost} sp`, listX+listW-10, iy+16);
+      }
     }
   });
 
-  // Selected slot detail
-  const sel=SKILLS[skillCursor];
-  ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.font='12px Courier New'; ctx.textAlign='center';
-  ctx.fillText(sel.owned ? '[ Acquired ]' : `Cost: ${sel.cost} SP`, cx, cy+48);
-  ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px Courier New';
-  ctx.fillText(sel.owned ? sel.desc : '???', cx, cy+65);
+  // Controls
+  ctx.fillStyle='rgba(255,255,255,0.22)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+  ctx.fillText('↑↓ select  ·  ←→ switch tab  ·  Enter/tap to buy  ·  C to continue', cx, cy+122);
+  ctx.fillStyle='rgba(255,160,60,0.75)'; ctx.font='bold 11px Courier New';
+  ctx.fillText('[ Continue Journey ]', cx, cy+140);
+
+  ctx.restore();
+}
+
+
+// ══════════════════════════════════════════════════════════════
+//  SPLASH SCREEN — shown once on first load
+//  Design intent: cold open feel. Title, brief dramatic pause, then tap to begin.
+//  After first death the home screen takes over instead.
+// ══════════════════════════════════════════════════════════════
+function drawSplash(ts) {
+  const cx=canvas.width/2, cy=canvas.height/2;
+  const t=ts*0.001;
+  drawBg(); drawStars(ts); drawMountains();
+
+  // Vignette
+  const vig=ctx.createRadialGradient(cx,cy,canvas.height*0.2,cx,cy,canvas.height*0.85);
+  vig.addColorStop(0,'rgba(0,0,0,0)'); vig.addColorStop(1,'rgba(0,0,0,0.7)');
+  ctx.fillStyle=vig; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Fade in
+  const fade=Math.min(stateTimer/1200,1);
+  ctx.save(); ctx.globalAlpha=fade;
+
+  // Title
+  ctx.fillStyle='rgba(200,180,255,0.95)'; ctx.font='bold 32px Courier New'; ctx.textAlign='center';
+  ctx.fillText('UNLIKELY HERO', cx, cy-30);
+
+  // Subtitle
+  ctx.fillStyle='rgba(255,214,107,0.6)'; ctx.font='11px Courier New';
+  ctx.fillText('a game about becoming', cx, cy-8);
+
+  // Tap prompt — pulses after 2s
+  if(stateTimer>2000){
+    const pulse=0.5+0.5*Math.sin(t*3);
+    ctx.globalAlpha=fade*pulse;
+    ctx.fillStyle='rgba(255,255,255,0.8)'; ctx.font='12px Courier New';
+    ctx.fillText('tap  /  press any key', cx, cy+40);
+  }
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HOME SCREEN
+// Design intent: only accessible after first death — cold open on first play.
+// Three options: Continue (resume same chapter), New Game (reset all), How To Play.
+// How To Play is intentionally minimal — "SURVIVE" captures the whole design.
+// ══════════════════════════════════════════════════════════════
+const HOME_OPTS = ['CONTINUE', 'NEW GAME', 'HOW TO PLAY'];
+
+function drawHome(ts) {
+  const cx=canvas.width/2, cy=canvas.height/2;
+  const t=ts*0.001;
+  // Background — reuse game bg
+  drawBg(); drawStars(ts); drawMountains();
+
+  // Title glow
+  const grd=ctx.createRadialGradient(cx,cy-60,0,cx,cy-60,180);
+  grd.addColorStop(0,'rgba(120,60,200,0.35)'); grd.addColorStop(1,'rgba(120,60,200,0)');
+  ctx.fillStyle=grd; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Game title
+  ctx.save();
+  ctx.fillStyle='rgba(200,180,255,0.9)'; ctx.font='bold 28px Courier New'; ctx.textAlign='center';
+  ctx.fillText('UNLIKELY HERO', cx, cy-70);
+  ctx.fillStyle='rgba(255,214,107,0.5)'; ctx.font='11px Courier New';
+  ctx.fillText('chapter i — the unlikely lester', cx, cy-48);
+  ctx.restore();
+
+  // Menu options
+  HOME_OPTS.forEach((label, i) => {
+    const oy = cy - 4 + i * 42;
+    const isHov = homeMenuCursor === i;
+    // Highlight box
+    ctx.fillStyle = isHov ? 'rgba(167,139,250,0.18)' : 'rgba(255,255,255,0.04)';
+    ctx.beginPath(); ctx.roundRect(cx-100, oy-20, 200, 34, 7); ctx.fill();
+    ctx.strokeStyle = isHov ? 'rgba(167,139,250,0.9)' : 'rgba(255,255,255,0.1)';
+    ctx.lineWidth=isHov?2:1;
+    ctx.beginPath(); ctx.roundRect(cx-100, oy-20, 200, 34, 7); ctx.stroke();
+    ctx.fillStyle = isHov ? '#ffd66b' : 'rgba(255,255,255,0.55)';
+    ctx.font=`${isHov?'bold ':''}14px Courier New`; ctx.textAlign='center';
+    ctx.fillText(label, cx, oy+1);
+  });
 
   // Controls hint
-  ctx.fillStyle='rgba(255,255,255,0.25)'; ctx.font='10px Courier New';
-  ctx.fillText('Tap slot to buy  |  Enter to continue', cx, cy+90);
+  ctx.save();
+  ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+  ctx.fillText('↑↓ or tap  ·  Enter to select', cx, cy+128);
+  ctx.restore();
+}
 
-  // Continue button
-  ctx.fillStyle='rgba(255,160,60,0.7)'; ctx.font='bold 12px Courier New';
-  ctx.fillText('[ Continue Journey ]', cx, cy+115);
+function drawHowToPlay() {
+  const cx=canvas.width/2, cy=canvas.height/2;
+  ctx.save();
+  ctx.fillStyle='rgba(4,1,12,0.96)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Big centred instruction — intentionally minimal, souls-like philosophy.
+  // Players discover mechanics; we only confirm the core loop.
+  ctx.fillStyle='rgba(200,180,255,0.85)'; ctx.font='bold 16px Courier New'; ctx.textAlign='center';
+  ctx.fillText('HOW TO PLAY', cx, cy-50);
+
+  ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.font='bold 36px Courier New';
+  ctx.fillText('SURVIVE', cx, cy+6);
+
+  ctx.fillStyle='rgba(255,255,255,0.25)'; ctx.font='11px Courier New';
+  ctx.fillText('Tap  /  Enter to go back', cx, cy+60);
+  ctx.restore();
+}
+
+function drawProgressBar() {
+  // Slim progress track at very bottom of canvas (on the border line with controls).
+  // Dot starts at the LEFT end of the track when player.x=0, moves right to the end.
+  // Level length is the world-X of the exit for each chapter.
+  if(gameState !== 'playing' && gameState !== 'catapult') return;
+
+  const levelEnd = chapter===CHAPTER.ONE ? CATAPULT_X :
+                   chapter===CHAPTER.TWO ? CATAPULT_X2 : CATAPULT_X3;
+  const pct    = Math.max(0, Math.min(1, player.x / levelEnd));
+
+  const trackY  = canvas.height - 3;
+  const trackX0 = 40;                       // left anchor = start of level
+  const trackX1 = canvas.width - 40;        // right anchor = end of level
+  const trackW  = trackX1 - trackX0;
+  const dotX    = trackX0 + pct * trackW;   // player dot
+
+  ctx.save();
+
+  // Background track
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(trackX0, trackY); ctx.lineTo(trackX1, trackY); ctx.stroke();
+
+  // Filled portion (progress made)
+  ctx.strokeStyle = 'rgba(167,139,250,0.5)';
+  ctx.beginPath(); ctx.moveTo(trackX0, trackY); ctx.lineTo(dotX, trackY); ctx.stroke();
+
+  // Ch1 fog marker on the bar — shows where the fog currently is
+  if(chapterTimer > FOG_DELAY){
+    const fogPct = Math.max(0, Math.min(1, fogX / levelEnd));
+    const fogBarX = trackX0 + fogPct * trackW;
+    ctx.fillStyle = 'rgba(200,80,220,0.7)';
+    ctx.beginPath(); ctx.arc(fogBarX, trackY, 3, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Start marker
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.beginPath(); ctx.arc(trackX0, trackY, 2.5, 0, Math.PI*2); ctx.fill();
+
+  // End marker
+  ctx.font = '10px serif'; ctx.textAlign = 'center';
+  ctx.fillText('🪃', trackX1, trackY+4); // catapult exit for all chapters
+
+  // Player glow dot
+  const pulse = 0.85 + 0.15*Math.sin(Date.now()*0.006);
+  const dg = ctx.createRadialGradient(dotX, trackY, 0, dotX, trackY, 7);
+  dg.addColorStop(0, `rgba(255,214,107,${pulse})`);
+  dg.addColorStop(0.5, `rgba(255,160,60,${pulse*0.5})`);
+  dg.addColorStop(1, 'rgba(255,100,20,0)');
+  ctx.fillStyle = dg;
+  ctx.beginPath(); ctx.arc(dotX, trackY, 7, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ffd66b';
+  ctx.beginPath(); ctx.arc(dotX, trackY, 2.5, 0, Math.PI*2); ctx.fill();
 
   ctx.restore();
 }
@@ -963,19 +1427,18 @@ function drawHUD(ts) {
   ctx.fillText(chLabel, 16, 30);
   ctx.restore();
 
-  // Skill points (top left, below chapter label) — only when earned
-  if(skillPoints > 0){
-    ctx.save();
-    ctx.fillStyle='rgba(167,139,250,0.8)'; ctx.font='11px Courier New'; ctx.textAlign='left';
-    ctx.fillText(`SP: ${skillPoints}`, 16, 48);
-    ctx.restore();
-  }
+  // Skill points — always visible, even at 0.
+  // Design intent: showing 0 creates aspiration; player knows what they're working toward.
+  ctx.save();
+  ctx.fillStyle = skillPoints>0 ? 'rgba(167,139,250,0.9)' : 'rgba(167,139,250,0.35)';
+  ctx.font='11px Courier New'; ctx.textAlign='left';
+  ctx.fillText(`SP: ${skillPoints}`, 16, 48);
+  ctx.restore();
 
   if(gameState !== 'playing') return; // below only while playing
 
-  // Ch1: fog warning — shown at top center ONLY after fog starts
-  // Catapult hint shown at bottom center to avoid collision with fog text
-  if(chapter===CHAPTER.ONE){
+  // Fog warning — shown on all chapters
+  {
     const remaining = Math.max(0, FOG_DELAY - chapterTimer);
     if(chapterTimer > FOG_DELAY - 8000){
       // Fog warning — pulses urgently
@@ -998,14 +1461,14 @@ function drawHUD(ts) {
     }
   }
 
-  // Ch2: bonfire hint when close — bottom center
-  if(chapter===CHAPTER.TWO){
-    const bDist = BONFIRE_X - player.x;
+  // Ch3: catapult hint when close — bottom center
+  if(chapter===CHAPTER.THREE){
+    const bDist = CATAPULT_X3 - player.x;
     if(bDist < 500 && bDist > 0){
       const alpha = Math.max(0, 1 - bDist/400) * (0.7+0.3*Math.sin(Date.now()*0.004));
       ctx.save(); ctx.globalAlpha=alpha;
       ctx.fillStyle='#ff9944'; ctx.font='bold 12px Courier New'; ctx.textAlign='center';
-      ctx.fillText('→ BONFIRE', cx, canvas.height - 30);
+      ctx.fillText('→ CATAPULT', cx, canvas.height - 30);
       ctx.restore();
     }
   }
@@ -1022,32 +1485,50 @@ function drawHUD(ts) {
 
 function drawGameOver() {
   const fade = Math.min(stateTimer/400, 1);
+  const cx=canvas.width/2, cy=canvas.height/2;
   ctx.save();
-  ctx.fillStyle=`rgba(10,4,28,${fade*0.82})`; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle=`rgba(10,4,28,${fade*0.88})`; ctx.fillRect(0,0,canvas.width,canvas.height);
   if(fade>0.55){
     const a=(fade-0.55)/0.45; ctx.globalAlpha=a;
     ctx.fillStyle='#ff6b6b'; ctx.font='bold 28px Courier New'; ctx.textAlign='center';
-    ctx.fillText('LESTER PANICKED!',canvas.width/2,canvas.height/2-44);
+    ctx.fillText('LESTER PANICKED!', cx, cy-70);
 
     // Score this run
     ctx.fillStyle='#ffd66b'; ctx.font='16px Courier New';
-    ctx.fillText(`Score: ${Math.floor(score)}`,canvas.width/2,canvas.height/2-10);
+    ctx.fillText(`Score: ${Math.floor(score)}`, cx, cy-38);
 
-    // High score (persisted via localStorage)
+    // High score
     const isNew = score >= highScore && score > 0;
     ctx.fillStyle = isNew ? '#a78bfa' : 'rgba(180,160,255,0.7)';
-    ctx.font='13px Courier New';
-    ctx.fillText(
-      isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`,
-      canvas.width/2, canvas.height/2+14
-    );
+    ctx.font='12px Courier New';
+    ctx.fillText(isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`, cx, cy-18);
 
-    // Total score across all runs
-    ctx.fillStyle='rgba(200,200,255,0.55)'; ctx.font='11px Courier New';
-    ctx.fillText(`Total score all-time: ${Math.floor(totalScore)}`,canvas.width/2,canvas.height/2+34);
+    // Total
+    ctx.fillStyle='rgba(200,200,255,0.45)'; ctx.font='11px Courier New';
+    ctx.fillText(`All-time: ${Math.floor(totalScore)}`, cx, cy-2);
 
-    ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.font='12px Courier New';
-    ctx.fillText('Tap  /  Enter to try again',canvas.width/2,canvas.height/2+60);
+    // Death screen options:
+    // CONTINUE = retry same chapter (score resets — new attempt)
+    // RESTART  = keep accumulated score+stats, go back to Ch1 (different from New Game)
+    // HOME     = home screen
+    const opts = ['CONTINUE', 'RESTART', 'HOME'];
+    opts.forEach((label, i) => {
+      const oy = cy + 24 + i * 32;
+      const isHov = homeMenuCursor === i;
+      ctx.fillStyle = isHov ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)';
+      ctx.beginPath(); ctx.roundRect(cx-80, oy-16, 160, 28, 6); ctx.fill();
+      ctx.strokeStyle = isHov ? 'rgba(255,214,107,0.8)' : 'rgba(255,255,255,0.15)';
+      ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(cx-80, oy-16, 160, 28, 6); ctx.stroke();
+      ctx.fillStyle = isHov ? '#ffd66b' : 'rgba(255,255,255,0.65)';
+      ctx.font = `${isHov?'bold ':''}13px Courier New`; ctx.textAlign='center';
+      ctx.fillText(label, cx, oy+1);
+    });
+    // Subtitle for highlighted option
+    const subtitles = ['retry this chapter','back to Ch1, keep score','main menu'];
+    ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px Courier New';
+    ctx.fillText(subtitles[homeMenuCursor]||'', cx, cy+124);
+    ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.font='10px Courier New';
+    ctx.fillText('↑↓ or tap  ·  Enter to confirm', cx, cy+138);
   }
   ctx.restore();
 }
@@ -1100,14 +1581,14 @@ function updateCatapult(dt) {
   // Phase 0 is handled in update() — we should never arrive here at phase 0.
   // Phases: 1=loading in cup, 2=arm swings, 3=player flies.
   if(catapultPhase===1){
-    // Load: lock player in cup, shake
-    player.x = CATAPULT_X + 2;
+    // Load: lock player in catapult cup. activeCatapultX set at trigger time.
+    player.x = activeCatapultX + 2;
     player.y = GY() - PH/2 - 28;
     player.vx=0; player.vy=0; player.grounded=false;
     if(catapultTimer > 1200){ catapultPhase=2; catapultTimer=0; }
   } else if(catapultPhase===2){
-    // Launch arm swing + fling player
-    player.x = CATAPULT_X + 2;
+    // Launch arm swing
+    player.x = activeCatapultX + 2;
     player.y = GY() - PH/2 - 28 - catapultTimer*0.08;
     if(catapultTimer > 300){
       catapultPhase=3; catapultTimer=0;
@@ -1122,8 +1603,20 @@ function updateCatapult(dt) {
     player.vx *= 0.995;
     if(catapultTimer > 2200){
       // Transition to chapter card
-      pendingChapter=CHAPTER.TWO;
-      gameState='chaptercard'; stateTimer=0;
+      // Ch3 catapult leads to skill menu then chapter card (Ch4 is TBD/stub)
+      // Ch1 -> Ch2, Ch2 -> Ch3, Ch3 -> skill menu then Ch4
+      if(chapter===CHAPTER.THREE){
+        // Open skill menu ONLY. The chaptercard fires AFTER player presses Continue.
+        // Do NOT set gameState='chaptercard' here — skill menu handles that.
+        pendingChapter=CHAPTER.FOUR;
+        skillMenuOpen=true; menuTab=0; skillCursor=0;
+        skillPoints += Math.floor(score / 5); // accumulate, don't replace
+        gameState='playing'; // keep as playing so skill menu overlay works correctly
+        stateTimer=0;
+      } else {
+        pendingChapter = chapter===CHAPTER.ONE ? CHAPTER.TWO : CHAPTER.THREE;
+        gameState='chaptercard'; stateTimer=0;
+      }
     }
   }
 }
@@ -1131,17 +1624,19 @@ function updateCatapult(dt) {
 // ══════════════════════════════════════════════════════════════
 //  RESET
 // ══════════════════════════════════════════════════════════════
-function startChapter(ch) {
+function startChapter(ch, isNewGame=false) {
   chapter=ch; chapterTimer=0;
   gameState='playing'; stateTimer=0;
-  score=0; cameraX=0;
-  fogX=-300; eSpawnTimer=0;
+  // Score accumulates across ALL chapters in a run — only reset on New Game or death.
+  // Design intent: skill points at bonfire reflect the whole journey, not just Ch3.
+  if(isNewGame) score=0;
+  cameraX=0;
+  fogX=-800; eSpawnTimer=0;  // reset fog far off-screen — it only appears after FOG_DELAY
   enemies.length=0;
-  catapultPhase=0; catapultTimer=0;
+  catapultPhase=0; catapultTimer=0; activeCatapultX=CATAPULT_X;
   bonfireReached=false; skillMenuOpen=false;
   buildTerrain();
   resetPlayer();
-  // Jump button always says Jump — player discovers charge mechanic organically in Ch2
   jIcon.textContent='↑';
   jLabelEl.textContent='Jump';
 }
@@ -1153,6 +1648,8 @@ function update(dt) {
   stateTimer += dt;
 
   if(gameState==='gameover') return;
+  if(gameState==='home') return;
+  if(gameState==='splash') return;
   if(skillMenuOpen) return;  // pause everything while bonfire skill menu is open
 
   if(gameState==='chaptercard') {
@@ -1172,27 +1669,27 @@ function update(dt) {
   chapterTimer += dt;
   score += dt * 0.01;
 
-  // Fog wall advance (ch1 only)
-  if(chapter===CHAPTER.ONE){
-    if(chapterTimer > FOG_DELAY){
-      fogX += FOG_SPEED * (dt/16.67);
+  // Fog wall advance (ch1 only).
+  // Fog wall — ALL chapters. Snaps to one screen behind player on first activation.
+  if(chapterTimer > FOG_DELAY){
+    if(fogX < player.x - canvas.width){
+      fogX = player.x - canvas.width; // snap to one screen behind on first activation
     }
-    // Fog reaches player = death
-    if(fogX >= player.x - PW/2){
-      gameState='gameover'; stateTimer=0; saveScores(); return;
+    fogX += FOG_SPEED * (dt / 16.67);
+    if(fogX >= player.x){
+      gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores(); return;
     }
-    // Player reaches catapult trigger.
-    // Design intent: set catapultPhase=1 HERE (not 0) so updateCatapult
-    // immediately starts the loading sequence. Phase 0 in updateCatapult
-    // was the old proximity check — now handled here instead.
-    if(player.x >= CATAPULT_X - 80 && catapultPhase===0){
-      gameState='catapult'; stateTimer=0;
-      catapultPhase=1;  // jump straight to loading — DO NOT set to 0
-      catapultTimer=0;
-      player.vx=0; player.facing=1;
-      enemies.length=0;
-      return;
-    }
+  }
+
+  // Ch1 catapult trigger — only in Ch1
+  if(chapter===CHAPTER.ONE && player.x >= CATAPULT_X - 80 && catapultPhase===0){
+    gameState='catapult'; stateTimer=0;
+    catapultPhase=1;
+    catapultTimer=0;
+    activeCatapultX=CATAPULT_X;
+    player.vx=0; player.facing=1;
+    enemies.length=0;
+    return;
   }
 
   // Horizontal input
@@ -1210,6 +1707,25 @@ function update(dt) {
   }
   player.x=Math.max(20, player.x+player.vx);
 
+  // Slide logic (Ch4+ only — Swooper makes it necessary).
+  // Trigger: joystick pushed down (dy>0.5) OR ArrowDown key, while moving on ground.
+  // Max slide duration: 600ms. Can't slide into a charge (different input path).
+  // Slide reduces collision height to PH*0.35 — enough to duck under Swooper.
+  // Slide: available from Ch4 onward (chapter-gated, no purchase needed).
+  // Base duration = 400ms. Slide Duration unlock adds 200ms per stack.
+  // Design intent: slide is the natural counter to Swooper which debuts in Ch4.
+  const slideAvailable = chapter >= CHAPTER.FOUR;
+  const slideDurUnlock = getUnlock('slide_dur');
+  const slideMaxDur = 400 + (slideDurUnlock ? slideDurUnlock.stacks * 200 : 0);
+  const slideInput = (J.dy > 0.5 || keys['ArrowDown']) && Math.abs(player.vx) > 0.5;
+  if(slideAvailable && player.grounded && slideInput && !player.crouching){
+    player.sliding = true;
+    player.slideTimer = Math.min(player.slideTimer + dt, slideMaxDur);
+  } else {
+    if(player.slideTimer > 0) player.slideTimer -= dt * 2;
+    if(player.slideTimer <= 0){ player.sliding=false; player.slideTimer=0; }
+  }
+
   // Jump logic
   const held=JB.held||keys[' '];
 
@@ -1224,7 +1740,9 @@ function update(dt) {
     if(player.grounded){
       if(held){
         player.crouching=true;
-        player.chargeTime=Math.min(player.chargeTime+dt,player.maxCharge);
+        // Spring Legs skill multiplies charge speed.
+        // getSpringLegsMultiplier() returns 1.0 + stacks*0.10.
+        player.chargeTime=Math.min(player.chargeTime+dt*getSpringLegsMultiplier(),player.maxCharge);
       }
       if(player.jumpQueued||(!held && player.crouching)){
         const pct=Math.max(0.15,player.chargeTime/player.maxCharge);
@@ -1244,6 +1762,8 @@ function update(dt) {
 
   const gy=GY();
   const feet=player.y+PH/2;
+  // Effective player height for collisions: full, crouched, or sliding
+  const effectivePH = player.sliding ? PH*0.35 : player.crouching ? PH*0.6 : PH;
   const pl=player.x-PW/2+4, pr=player.x+PW/2-4;
   player.grounded=false;
 
@@ -1251,7 +1771,7 @@ function update(dt) {
   if(player.vy>=0){
     for(const p of platforms){
       if(pr>p.x && pl<p.x+p.w && feet>=p.y && feet<=p.y+p.h+Math.abs(player.vy)+2){
-        player.y=p.y-PH/2; player.vy=0; player.grounded=true; break;
+        player.y=p.y-effectivePH/2; player.vy=0; player.grounded=true; break;
       }
     }
   }
@@ -1264,21 +1784,44 @@ function update(dt) {
       player.y=gy-PH/2; player.vy=0; player.grounded=true;
     }
   }
-  if(player.y>canvas.height+300){ gameState='gameover'; stateTimer=0; saveScores(); }
+  if(player.y>canvas.height+300){ gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores(); }
 
   // Camera
   const tc=player.x-canvas.width/2;
   cameraX+=(tc-cameraX)*0.08; if(cameraX<0) cameraX=0;
 
   // Generate terrain ahead (ch2)
-  if(chapter===CHAPTER.TWO) genTerrain(player.x+canvas.width*2);
+  if(chapter >= CHAPTER.TWO) genTerrain(player.x + canvas.width * 2);
 
-  // Ch2 bonfire trigger — opens skill menu when player reaches it
-  if(chapter===CHAPTER.TWO && !bonfireReached && player.x >= BONFIRE_X - 60){
-    bonfireReached=true;
-    skillMenuOpen=true;
-    skillPoints = Math.floor(score / 5); // convert score to skill points
-    player.vx=0; // stop player at bonfire
+  // Ch2 catapult trigger — when player reaches it, warp them to a
+  // safe starting point near the catapult base, THEN begin loading.
+  // Design intent: the warp is brief (player is placed just behind the catapult)
+  // so the sequence reads as "you ran here, now get launched".
+  if(chapter===CHAPTER.TWO && player.x >= CATAPULT_X2 - 80 && catapultPhase===0){
+    gameState='catapult'; stateTimer=0;
+    catapultPhase=1;
+    catapultTimer=0;
+    activeCatapultX=CATAPULT_X2;
+    player.x = CATAPULT_X2 - 20; // position just at the catapult base
+    player.y = GY() - PH/2;
+    player.vx=0; player.vy=0; player.facing=1;
+    cameraX = player.x - canvas.width*0.4; // snap camera so catapult is visible
+    enemies.length=0;
+    return;
+  }
+
+  // Ch3 catapult trigger — launches player then opens skill menu in the chaptercard.
+  if(chapter===CHAPTER.THREE && !bonfireReached && player.x >= CATAPULT_X3 - 80 && catapultPhase===0){
+    bonfireReached=true; // latch to prevent re-trigger
+    gameState='catapult'; stateTimer=0;
+    catapultPhase=1;
+    catapultTimer=0;
+    activeCatapultX=CATAPULT_X3;
+    player.x = CATAPULT_X3 - 20;
+    player.y = GY() - PH/2;
+    player.vx=0; player.vy=0; player.facing=1;
+    cameraX = player.x - canvas.width*0.4;
+    enemies.length=0;
   }
 
   updateEnemies(dt);
@@ -1294,11 +1837,12 @@ function render(ts) {
   drawMountains();
   drawBgTrees();
   drawTerrain();
-  if(chapter===CHAPTER.TWO) drawPlatforms();
-  if(chapter===CHAPTER.TWO) drawBonfire(ts);
+  if(chapter===CHAPTER.THREE) drawPlatforms();
 
   // Catapult (ch1 always visible near the end)
-  if(chapter===CHAPTER.ONE) drawCatapult(ts);
+  if(chapter===CHAPTER.ONE) drawCatapult(ts, CATAPULT_X);
+  if(chapter===CHAPTER.TWO)   drawCatapult(ts, CATAPULT_X2);
+  if(chapter===CHAPTER.THREE) drawCatapult(ts, CATAPULT_X3);
 
   drawEnemies();
 
@@ -1306,17 +1850,22 @@ function render(ts) {
   if(gameState!=='chaptercard'){
     const charState = player.flying ? 'jump' :
                       !player.grounded ? 'jump' :
+                      player.sliding   ? 'slide' :
                       player.crouching ? 'crouch' : 'stand';
     drawCharacter(player.x-cameraX, player.y+PH/2, player.facing, player.walkFrame, charState);
   }
 
   drawFog();
   drawChargeRing(player.chargeTime/player.maxCharge);
+  drawProgressBar();
   drawHUD(ts);
   drawSkillMenu();
 
   if(gameState==='gameover')    drawGameOver();
   if(gameState==='chaptercard') drawChapterCard();
+  if(gameState==='splash')      drawSplash(ts);
+  if(gameState==='home')        drawHome(ts);
+  if(howToPlayOpen)             drawHowToPlay();
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1331,29 +1880,147 @@ function loop(ts) {
 // ══════════════════════════════════════════════════════════════
 //  INPUT HANDLERS (global)
 // ══════════════════════════════════════════════════════════════
-document.addEventListener('touchstart', e=>{
-  if(gameState==='gameover' && stateTimer>700)  { startChapter(chapter); return; }
+
+function confirmGameOver() {
+  if(stateTimer < 700) return;
+  if(homeMenuCursor===0){
+    // Continue — retry same chapter, score resets
+    score=0; startChapter(chapter);
+  } else if(homeMenuCursor===1){
+    // Restart — back to Ch1, but KEEP accumulated score and skills
+    // Design intent: player keeps their progress, just resets position
+    startChapter(CHAPTER.ONE, false);
+  } else {
+    // Home
+    gameState='home'; stateTimer=0; homeMenuCursor=0; score=0;
+  }
+}
+
+function confirmHome() {
+  if(howToPlayOpen){ howToPlayOpen=false; return; }
+  if(homeMenuCursor===0){
+    // Continue — same chapter as when they died
+    startChapter(chapter);
+  } else if(homeMenuCursor===1){
+    // New Game — full reset from Ch1
+    startChapter(CHAPTER.ONE, true);
+  } else {
+    // How To Play
+    howToPlayOpen=true;
+  }
+}
+
+// Mouse click — mirrors touchstart for desktop users.
+// Extracts clientX/Y and routes through the same menu logic.
+function handlePointer(clientX, clientY) {
+  if(gameState==='splash'&&stateTimer>800){ startChapter(CHAPTER.ONE,true); return; }
+  if(howToPlayOpen){ howToPlayOpen=false; return; }
+
+  if(gameState==='gameover' && stateTimer>700){
+    const rect=canvas.getBoundingClientRect();
+    const ty=clientY - rect.top;
+    const cy=canvas.height/2;
+    // 3 options spaced 32px apart starting at cy+24
+    if     (ty > cy+8  && ty < cy+40)  homeMenuCursor=0;
+    else if(ty > cy+40 && ty < cy+72)  homeMenuCursor=1;
+    else if(ty > cy+72 && ty < cy+104) homeMenuCursor=2;
+    confirmGameOver(); return;
+  }
+  if(gameState==='home'){
+    const rect=canvas.getBoundingClientRect();
+    const ty=clientY - rect.top;
+    const cy=canvas.height/2;
+    HOME_OPTS.forEach((_,i)=>{
+      const oy=cy-4+i*42;
+      if(ty>=oy-20 && ty<=oy+14) homeMenuCursor=i;
+    });
+    confirmHome(); return;
+  }
   if(gameState==='chaptercard' && stateTimer>1000){ startChapter(pendingChapter); return; }
+}
+
+document.addEventListener('click', e=>{
+  handlePointer(e.clientX, e.clientY);
 });
+
+document.addEventListener('touchstart', e=>{
+  handlePointer(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+});
+// buyItem: purchase from active menu tab (SKILLS or UNLOCKS).
+// Skills are stackable — cost rises 50% each stack.
+// Unlocks are one-time (except toggleable ones which can be turned on/off).
+function buyItem(cursor) {
+  if(menuTab === 0){
+    const sk = SKILLS[cursor];
+    if(!sk) return;
+    if(skillPoints < sk.cost) return;
+    if(sk.stackable){
+      skillPoints -= sk.cost;
+      sk.stacks++;
+      sk.cost = Math.round(sk.cost * 1.5); // escalate per stack
+    } else {
+      if(sk.stacks > 0) return; // already bought
+      skillPoints -= sk.cost;
+      sk.stacks = 1;
+    }
+  } else {
+    const un = UNLOCKS[cursor];
+    if(!un) return;
+    if(un.stackable){
+      // Stackable unlock (e.g. Slide Duration) — buy multiple times
+      if(skillPoints < un.cost) return;
+      skillPoints -= un.cost;
+      un.stacks = (un.stacks||0) + 1;
+      un.owned = true;
+      un.cost = Math.round(un.cost * 1.5);
+    } else if(un.owned){
+      if(un.toggleable) un.active = !un.active;
+    } else {
+      if(skillPoints < un.cost) return;
+      skillPoints -= un.cost;
+      un.owned = true;
+      un.active = true;
+    }
+  }
+}
+
 document.addEventListener('keydown', e=>{
+  if(gameState==='splash'&&stateTimer>800){ startChapter(CHAPTER.ONE,true); return; }
+  if(howToPlayOpen){ howToPlayOpen=false; return; }
+
   // Skill menu navigation
   if(skillMenuOpen){
-    if(e.key==='ArrowRight') skillCursor=(skillCursor+1)%10;
-    if(e.key==='ArrowLeft')  skillCursor=(skillCursor+9)%10;
-    if(e.key==='ArrowDown')  skillCursor=(skillCursor+5)%10;
-    if(e.key==='ArrowUp')    skillCursor=(skillCursor+5)%10;
-    if(e.key===' '||e.key==='Enter'){
-      const sk=SKILLS[skillCursor];
-      if(!sk.owned && skillPoints>=sk.cost){ sk.owned=true; skillPoints-=sk.cost; }
+    const items=menuTab===0?SKILLS:UNLOCKS;
+    if(e.key==='ArrowDown')  skillCursor=Math.min(skillCursor+1,items.length-1);
+    if(e.key==='ArrowUp')    skillCursor=Math.max(skillCursor-1,0);
+    if(e.key==='ArrowRight'||e.key==='ArrowLeft'){
+      menuTab=menuTab===0?1:0; skillCursor=0;
     }
+    if(e.key===' '||e.key==='Enter') buyItem(skillCursor);
     if(e.key==='c'||e.key==='C'){
-      // C to continue from skill menu
-      skillMenuOpen=false; pendingChapter=CHAPTER.THREE; gameState='chaptercard'; stateTimer=0;
+      skillMenuOpen=false;
+      gameState='chaptercard'; stateTimer=0;
     }
     return;
   }
+
+  // Game over screen navigation
+  if(gameState==='gameover'){
+    if(e.key==='ArrowDown') homeMenuCursor=Math.min(homeMenuCursor+1,2);
+    if(e.key==='ArrowUp')   homeMenuCursor=Math.max(homeMenuCursor-1,0);
+    if(e.key==='Enter')     confirmGameOver();
+    return;
+  }
+
+  // Home screen navigation
+  if(gameState==='home'){
+    if(e.key==='ArrowDown') homeMenuCursor=(homeMenuCursor+1)%3;
+    if(e.key==='ArrowUp')   homeMenuCursor=(homeMenuCursor+2)%3;
+    if(e.key==='Enter')     confirmHome();
+    return;
+  }
+
   if(e.key==='Enter'){
-    if(gameState==='gameover' && stateTimer>700)   { startChapter(chapter); return; }
     if(gameState==='chaptercard' && stateTimer>1000){ startChapter(pendingChapter); return; }
   }
 });
@@ -1361,7 +2028,8 @@ document.addEventListener('keydown', e=>{
 // ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
-startChapter(CHAPTER.ONE);
+// Start at splash screen. Player taps/presses any key to begin Ch1.
+stateTimer=0; // splash uses stateTimer for its fade-in
 requestAnimationFrame(ts=>{ lastTime=ts; requestAnimationFrame(loop); });
 </script>
 </body>
