@@ -94,7 +94,7 @@ function lerp(a,b,t){ return a+(b-a)*t; }
 // ══════════════════════════════════════════════════════════════
 //  GAME STATE
 // ══════════════════════════════════════════════════════════════
-const CHAPTER = { ONE:1, TWO:2, THREE:3 };
+const CHAPTER = { ONE:1, TWO:2, THREE:3, FOUR:4 };
 
 let chapter        = CHAPTER.ONE;
 let chapterTimer   = 0;
@@ -288,7 +288,8 @@ const player = {
   grounded:false, facing:1,
   walkFrame:0,
   crouching:false, chargeTime:0, maxCharge:650, jumpQueued:false,
-  // catapult fly
+  sliding:false,   // true while slide is active (down+moving on ground)
+  slideTimer:0,    // slide duration limiter (max 600ms per slide)
   flying:false,
 };
 
@@ -306,30 +307,47 @@ function resetPlayer() {
 const enemies = [];
 let eSpawnTimer = 0;
 
+// ── Creature roster ────────────────────────────────────────
+// label = internal dispatch key (used in draw switch + update)
+// name  = display name shown briefly on spawn
+// Chapter assignment: controlled by which ETYPES_CHx array the entry lives in.
+// To move a creature: cut its row, paste into the target array.
+// To add a creature: add row here + drawXxx() + case in drawEnemies dispatch.
 const ETYPES_CH1 = [
-  // Ch1: crabs only — simple, ground-level, easy to learn jump timing against.
-  {w:32,h:20,spd:1.6,label:'crab',  col:'#e84c3d',acc:'#ff7c6e'},
+  // Ch1: Pincher only. Low, wide, predictable. Pure jump-timing tutorial.
+  {w:32,h:20,spd:1.6,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
 ];
 const ETYPES_CH2 = [
-  // Ch2: crabs return + hopper introduced.
-  // Hopper does a small periodic bounce, making it harder to jump over.
-  // No totem/turtle yet — introduce them gradually.
-  {w:32,h:20,spd:1.8,label:'crab',   col:'#e84c3d',acc:'#ff7c6e'},
-  {w:24,h:28,spd:1.5,label:'hopper', col:'#5b2d8e',acc:'#b86ee8'},
+  // Ch2: Pincher (faster) + Idol introduced.
+  // Idol is tall and narrow — teaches that not all threats have the same clearance height.
+  {w:32,h:20,spd:1.8,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.4,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
 ];
 const ETYPES_CH3 = [
-  // Ch3: all types return, hopper more common, speeds up.
-  {w:32,h:20,spd:2.0,label:'crab',   col:'#e84c3d',acc:'#ff7c6e'},
-  {w:18,h:42,spd:1.6,label:'totem',  col:'#8b6914',acc:'#c9a227'},
-  {w:28,h:26,spd:1.4,label:'turtle', col:'#2e8b57',acc:'#52c97a'},
-  {w:24,h:28,spd:1.8,label:'hopper', col:'#5b2d8e',acc:'#b86ee8'},
-  {w:24,h:28,spd:1.8,label:'hopper', col:'#5b2d8e',acc:'#b86ee8'}, // double weight
+  // Ch3: Pincher + Idol return. Shellback + Bounder introduced.
+  // Bounder's hop combined with pits/platforms makes Ch3 the first truly complex chapter.
+  {w:32,h:20,spd:2.0,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.6,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+  {w:28,h:26,spd:1.4,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
+  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
+  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'}, // double weight
+];
+const ETYPES_CH4 = [
+  // Ch4: All prior creatures + Swooper introduced.
+  // Swooper is a flying enemy that dives down — requires slide or timing to avoid.
+  // Slide (hold-down while running) is unlocked in Ch4 as the new mechanic.
+  {w:32,h:20,spd:2.2,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.8,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+  {w:28,h:26,spd:1.6,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
+  {w:24,h:28,spd:2.0,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
+  {w:30,h:22,spd:2.0,label:'swooper', name:'Swooper',  col:'#1a6b8a',acc:'#4dc8f0'},
 ];
 
 function getETypes() {
-  if(chapter===CHAPTER.ONE)   return ETYPES_CH1;
-  if(chapter===CHAPTER.TWO)   return ETYPES_CH2;
-  return ETYPES_CH3;
+  if(chapter===CHAPTER.ONE)  return ETYPES_CH1;
+  if(chapter===CHAPTER.TWO)  return ETYPES_CH2;
+  if(chapter===CHAPTER.THREE)return ETYPES_CH3;
+  return ETYPES_CH4;
 }
 
 function spawnEnemy() {
@@ -338,18 +356,21 @@ function spawnEnemy() {
   const spawnX = player.x + canvas.width * 0.65 + rnd(0, 200);
   // Only spawn on ground
   if (!isGroundAt(spawnX)) return;
+  const isSwooper = t.label==='swooper';
+  const spawnY = isSwooper ? GY() - 120 - rnd(0,60) : GY() - t.h/2;
   enemies.push({
     x: spawnX,
-    y: GY() - t.h/2,
+    y: spawnY,
     w:t.w, h:t.h, spd: t.spd + score*0.003,
-    label:t.label, col:t.col, acc:t.acc,
+    label:t.label, name:t.name, col:t.col, acc:t.acc,
     anim: rnd(0, Math.PI*2),
-    grounded: true,
+    grounded: !isSwooper,
     vy: 0,
-    // Hopper-specific: hopTimer counts toward next hop, hopPhase tracks arc.
-    // Design intent: hop is a SMALL bounce (~40% of player jump height).
-    // It should be just enough to make timing tricky, not undodgeable.
-    hopTimer: rnd(0, 1200),  // stagger hop timing so not all hoppers sync
+    hopTimer: rnd(0, 1200),   // stagger hopper timing so they don't all bounce in sync
+    swoopTimer: rnd(800,2000),// time until next swoop dive
+    swooping: false,          // true during active dive
+    baseY: spawnY,            // flight altitude — returns here after swooping
+    nameTimer: 1800,
   });
 }
 
@@ -365,6 +386,7 @@ function updateEnemies(dt) {
     const e = enemies[i];
     e.x  -= e.spd;
     e.anim += dt * 0.004;
+    if(e.nameTimer > 0) e.nameTimer -= dt;
 
     // Gravity for enemies (so they fall into pits)
     if (!e.grounded) e.vy += 0.55;
@@ -417,7 +439,7 @@ function updateEnemies(dt) {
 const jBase = document.getElementById('joystick-base');
 const jKnob = document.getElementById('joystick-knob');
 const jZone = document.getElementById('joystick-zone');
-const J = { active:false, tid:null, bx:0, by:0, dx:0, maxR:42 };
+const J = { active:false, tid:null, bx:0, by:0, dx:0, dy:0, maxR:42 };
 
 jZone.addEventListener('touchstart',e=>{
   e.preventDefault(); if(J.active) return;
@@ -439,6 +461,7 @@ function moveJ(cx,cy){
   const dist=Math.sqrt(dx*dx+dy*dy);
   if(dist>J.maxR){dx=dx/dist*J.maxR; dy=dy/dist*J.maxR;}
   J.dx=dx/J.maxR;
+  J.dy=dy/J.maxR;  // track vertical for slide detection
   jKnob.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;
 }
 
@@ -675,6 +698,48 @@ function drawHopper(e) {
 
 // drawCatapult: draws catapult at given world X.
 // Reused for both Ch1 (CATAPULT_X) and Ch2 (CATAPULT_X2).
+// Swooper — a winged creature that flies and dives.
+// Design intent: thin horizontal silhouette so slide (low profile) clearly counters it.
+// Wings animate with a flap cycle; body tilts during dive.
+function drawSwooper(e) {
+  const diving = e.swooping;
+  const tilt = diving ? 0.5 : -0.1;
+  ctx.save();
+  ctx.rotate(tilt);
+
+  // Body — sleek, horizontal
+  ctx.fillStyle=e.col;
+  ctx.beginPath(); ctx.ellipse(0,0,e.w/2,e.h/2,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=e.acc;
+  ctx.beginPath(); ctx.ellipse(-2,-2,e.w/3,e.h/3,-0.2,0,Math.PI*2); ctx.fill();
+
+  // Wings — animated flap
+  const flapAngle = diving ? 0.3 : Math.sin(e.anim*4)*0.5;
+  ctx.fillStyle=e.col;
+  // Left wing
+  ctx.save(); ctx.translate(-e.w/2+4, 0); ctx.rotate(-flapAngle);
+  ctx.beginPath(); ctx.ellipse(-10,0,14,5,-0.2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  // Right wing
+  ctx.save(); ctx.translate(e.w/2-4, 0); ctx.rotate(flapAngle);
+  ctx.beginPath(); ctx.ellipse(10,0,14,5,0.2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // Eyes — beady, forward-facing
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.ellipse(e.w/2-5,-3,3,3,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#0a1a2a';
+  ctx.beginPath(); ctx.ellipse(e.w/2-4,-3,1.5,1.5,0,0,Math.PI*2); ctx.fill();
+
+  // Beak
+  ctx.fillStyle=e.acc;
+  ctx.beginPath();
+  ctx.moveTo(e.w/2+2,-1); ctx.lineTo(e.w/2+8,0); ctx.lineTo(e.w/2+2,2);
+  ctx.closePath(); ctx.fill();
+
+  ctx.restore();
+}
+
 function drawCatapult(ts, worldX) {
   const sx = wx(worldX);
   const gy = GY();
@@ -738,12 +803,22 @@ function drawEnemies() {
     const sx=wx(e.x); if(sx<-100||sx>canvas.width+100) continue;
     const bob = e.grounded ? Math.sin(e.anim)*2 : 0;
     ctx.save(); ctx.translate(sx,e.y+bob);
-    if(e.label==='crab')         drawCrab(e);
-    else if(e.label==='totem')   drawTotem(e);
-    else if(e.label==='hopper')  drawHopper(e);
-    else                         drawTurtle(e);
+    if(e.label==='crab')          drawCrab(e);
+    else if(e.label==='totem')    drawTotem(e);
+    else if(e.label==='hopper')   drawHopper(e);
+    else if(e.label==='swooper')  drawSwooper(e);
+    else                          drawTurtle(e);
+    // Exclamation mark — always shown
     ctx.fillStyle='rgba(255,220,100,0.85)'; ctx.font='bold 12px Courier New'; ctx.textAlign='center';
     ctx.fillText('!',0,-e.h/2-10);
+    // Creature name fades in on spawn, then disappears
+    if(e.nameTimer > 0){
+      const na = Math.min(e.nameTimer/400, 1) * Math.min(e.nameTimer, 400)/400;
+      ctx.save(); ctx.globalAlpha=na;
+      ctx.fillStyle='#fff'; ctx.font='9px Courier New'; ctx.textAlign='center';
+      ctx.fillText(e.name, 0, -e.h/2-22);
+      ctx.restore();
+    }
     ctx.restore();
   }
 }
@@ -837,6 +912,34 @@ function drawLester(wf, moving, state) {
     ctx.beginPath(); ctx.moveTo(2,hipY); ctx.lineTo(4+swing*.5,hipY+14); ctx.lineTo(8+swing*.5,hipY+22); ctx.stroke();
     ctx.fillStyle='#f5f5f5'; ctx.beginPath(); ctx.ellipse(9+swing*.5,hipY+24,8,4,-0.2,0,Math.PI*2); ctx.fill();
     ctx.restore();
+  }
+
+  // Override whole body for slide — Lester goes flat, legs extended forward
+  if(state==='slide'){
+    ctx.save();
+    ctx.translate(0,-8); // lower to ground
+    // Body horizontal
+    ctx.fillStyle='#ddeeff'; ctx.beginPath(); ctx.ellipse(4,-10,16,7,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#aaccee'; ctx.fillRect(-4,-14,8,6);
+    // Backpack flattened
+    ctx.fillStyle='#c0392b'; ctx.beginPath(); ctx.ellipse(-6,-10,8,5,0,0,Math.PI*2); ctx.fill();
+    // Legs out front
+    ctx.strokeStyle='#4a36a0'; ctx.lineWidth=7; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(6,-4); ctx.lineTo(22,-4); ctx.stroke();
+    ctx.fillStyle='#f5f5f5'; ctx.beginPath(); ctx.ellipse(24,-4,7,3.5,0,0,Math.PI*2); ctx.fill();
+    // Head down
+    ctx.fillStyle='#f0c890'; ctx.beginPath(); ctx.ellipse(2,-18,8,9,0.3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#5c3d1e'; ctx.beginPath(); ctx.ellipse(2,-25,7,5,0.3,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#333'; ctx.lineWidth=1.5;
+    ctx.strokeRect(-4,-21,6,4); ctx.strokeRect(2,-21,6,4);
+    ctx.fillStyle='#333';
+    ctx.beginPath(); ctx.ellipse(-1,-19,1.5,1.5,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(5,-19,1.5,1.5,0,0,Math.PI*2); ctx.fill();
+    // Dust puff
+    ctx.fillStyle='rgba(200,180,255,0.25)';
+    ctx.beginPath(); ctx.ellipse(-10,-3,10,5,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    return; // skip normal upper body draw below
   }
 
   // ── Upper body (torso + backpack + arms + head) ──
@@ -1148,6 +1251,63 @@ function drawHowToPlay() {
   ctx.restore();
 }
 
+function drawProgressBar() {
+  // Slim progress track at very bottom of canvas (on the border line with controls).
+  // Dot starts at the LEFT end of the track when player.x=0, moves right to the end.
+  // Level length is the world-X of the exit for each chapter.
+  if(gameState !== 'playing' && gameState !== 'catapult') return;
+
+  const levelEnd = chapter===CHAPTER.ONE ? CATAPULT_X :
+                   chapter===CHAPTER.TWO ? CATAPULT_X2 : BONFIRE_X;
+  const pct    = Math.max(0, Math.min(1, player.x / levelEnd));
+
+  const trackY  = canvas.height - 3;
+  const trackX0 = 40;                       // left anchor = start of level
+  const trackX1 = canvas.width - 40;        // right anchor = end of level
+  const trackW  = trackX1 - trackX0;
+  const dotX    = trackX0 + pct * trackW;   // player dot
+
+  ctx.save();
+
+  // Background track
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(trackX0, trackY); ctx.lineTo(trackX1, trackY); ctx.stroke();
+
+  // Filled portion (progress made)
+  ctx.strokeStyle = 'rgba(167,139,250,0.5)';
+  ctx.beginPath(); ctx.moveTo(trackX0, trackY); ctx.lineTo(dotX, trackY); ctx.stroke();
+
+  // Ch1 fog marker on the bar — shows where the fog currently is
+  if(chapter===CHAPTER.ONE && chapterTimer > FOG_DELAY){
+    const fogPct = Math.max(0, Math.min(1, fogX / levelEnd));
+    const fogBarX = trackX0 + fogPct * trackW;
+    ctx.fillStyle = 'rgba(200,80,220,0.7)';
+    ctx.beginPath(); ctx.arc(fogBarX, trackY, 3, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Start marker
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.beginPath(); ctx.arc(trackX0, trackY, 2.5, 0, Math.PI*2); ctx.fill();
+
+  // End marker
+  ctx.font = '10px serif'; ctx.textAlign = 'center';
+  ctx.fillText(chapter===CHAPTER.THREE ? '🔥' : '🪃', trackX1, trackY+4);
+
+  // Player glow dot
+  const pulse = 0.85 + 0.15*Math.sin(Date.now()*0.006);
+  const dg = ctx.createRadialGradient(dotX, trackY, 0, dotX, trackY, 7);
+  dg.addColorStop(0, `rgba(255,214,107,${pulse})`);
+  dg.addColorStop(0.5, `rgba(255,160,60,${pulse*0.5})`);
+  dg.addColorStop(1, 'rgba(255,100,20,0)');
+  ctx.fillStyle = dg;
+  ctx.beginPath(); ctx.arc(dotX, trackY, 7, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ffd66b';
+  ctx.beginPath(); ctx.arc(dotX, trackY, 2.5, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
 function drawHUD(ts) {
   const cx = canvas.width/2;
 
@@ -1165,13 +1325,13 @@ function drawHUD(ts) {
   ctx.fillText(chLabel, 16, 30);
   ctx.restore();
 
-  // Skill points (top left, below chapter label) — only when earned
-  if(skillPoints > 0){
-    ctx.save();
-    ctx.fillStyle='rgba(167,139,250,0.8)'; ctx.font='11px Courier New'; ctx.textAlign='left';
-    ctx.fillText(`SP: ${skillPoints}`, 16, 48);
-    ctx.restore();
-  }
+  // Skill points — always visible, even at 0.
+  // Design intent: showing 0 creates aspiration; player knows what they're working toward.
+  ctx.save();
+  ctx.fillStyle = skillPoints>0 ? 'rgba(167,139,250,0.9)' : 'rgba(167,139,250,0.35)';
+  ctx.font='11px Courier New'; ctx.textAlign='left';
+  ctx.fillText(`SP: ${skillPoints}`, 16, 48);
+  ctx.restore();
 
   if(gameState !== 'playing') return; // below only while playing
 
@@ -1392,13 +1552,19 @@ function update(dt) {
   chapterTimer += dt;
   score += dt * 0.01;
 
-  // Fog wall advance (ch1 only)
+  // Fog wall advance (ch1 only).
+  // When fog first activates, snap it to just off the left camera edge so
+  // it's always visible entering from the left regardless of how far right
+  // the player has walked. After that it marches right at FOG_SPEED.
   if(chapter===CHAPTER.ONE){
     if(chapterTimer > FOG_DELAY){
+      if(fogX < cameraX - 60){
+        fogX = cameraX - 60; // snap to just off left edge on first activation
+      }
       fogX += FOG_SPEED * (dt/16.67);
     }
-    // Fog reaches player = death
-    if(fogX >= player.x - PW/2){
+    // Kill: fog right edge reaches player left side
+    if(chapterTimer > FOG_DELAY && fogX >= player.x - PW/2){
       gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores(); return;
     }
     // Player reaches catapult trigger.
@@ -1429,6 +1595,19 @@ function update(dt) {
     player.vx*=0.72;
   }
   player.x=Math.max(20, player.x+player.vx);
+
+  // Slide logic (Ch4+ only — Swooper makes it necessary).
+  // Trigger: joystick pushed down (dy>0.5) OR ArrowDown key, while moving on ground.
+  // Max slide duration: 600ms. Can't slide into a charge (different input path).
+  // Slide reduces collision height to PH*0.35 — enough to duck under Swooper.
+  const slideInput = (J.dy > 0.5 || keys['ArrowDown']) && Math.abs(player.vx) > 0.5;
+  if(chapter >= CHAPTER.FOUR && player.grounded && slideInput && !player.crouching){
+    player.sliding = true;
+    player.slideTimer = Math.min(player.slideTimer + dt, 600);
+  } else {
+    if(player.slideTimer > 0) player.slideTimer -= dt * 2; // recover faster than slide
+    if(player.slideTimer <= 0){ player.sliding=false; player.slideTimer=0; }
+  }
 
   // Jump logic
   const held=JB.held||keys[' '];
@@ -1466,6 +1645,8 @@ function update(dt) {
 
   const gy=GY();
   const feet=player.y+PH/2;
+  // Effective player height for collisions: full, crouched, or sliding
+  const effectivePH = player.sliding ? PH*0.35 : player.crouching ? PH*0.6 : PH;
   const pl=player.x-PW/2+4, pr=player.x+PW/2-4;
   player.grounded=false;
 
@@ -1473,7 +1654,7 @@ function update(dt) {
   if(player.vy>=0){
     for(const p of platforms){
       if(pr>p.x && pl<p.x+p.w && feet>=p.y && feet<=p.y+p.h+Math.abs(player.vy)+2){
-        player.y=p.y-PH/2; player.vy=0; player.grounded=true; break;
+        player.y=p.y-effectivePH/2; player.vy=0; player.grounded=true; break;
       }
     }
   }
@@ -1495,12 +1676,18 @@ function update(dt) {
   // Generate terrain ahead (ch2)
   if(chapter>=CHAPTER.TWO) genTerrain(player.x+canvas.width*2);
 
-  // Ch2 catapult trigger — same mechanic as Ch1 catapult but uses CATAPULT_X2.
+  // Ch2 catapult trigger — when player reaches it, warp them to a
+  // safe starting point near the catapult base, THEN begin loading.
+  // Design intent: the warp is brief (player is placed just behind the catapult)
+  // so the sequence reads as "you ran here, now get launched".
   if(chapter===CHAPTER.TWO && player.x >= CATAPULT_X2 - 80 && catapultPhase===0){
     gameState='catapult'; stateTimer=0;
     catapultPhase=1;
     catapultTimer=0;
-    player.vx=0; player.facing=1;
+    player.x = CATAPULT_X2 - 20; // position just at the catapult base
+    player.y = GY() - PH/2;
+    player.vx=0; player.vy=0; player.facing=1;
+    cameraX = player.x - canvas.width*0.4; // snap camera so catapult is visible
     enemies.length=0;
     return;
   }
@@ -1541,12 +1728,14 @@ function render(ts) {
   if(gameState!=='chaptercard'){
     const charState = player.flying ? 'jump' :
                       !player.grounded ? 'jump' :
+                      player.sliding   ? 'slide' :
                       player.crouching ? 'crouch' : 'stand';
     drawCharacter(player.x-cameraX, player.y+PH/2, player.facing, player.walkFrame, charState);
   }
 
   drawFog();
   drawChargeRing(player.chargeTime/player.maxCharge);
+  drawProgressBar();
   drawHUD(ts);
   drawSkillMenu();
 
