@@ -201,14 +201,22 @@ function getShieldStrength() {
 // ── Persistent scoring ─────────────────────────────────────
 // Design intent: highScore rewards skill, totalScore rewards dedication.
 // Both stored in localStorage so they survive page refreshes.
-let highScore   = parseFloat(localStorage.getItem('uh_highscore')  || '0');
-let totalScore  = parseFloat(localStorage.getItem('uh_totalscore') || '0');
+let highScore   = parseFloat(localStorage.getItem('uh_highscore')   || '0');
+let totalScore  = parseFloat(localStorage.getItem('uh_totalscore')  || '0');
+// SP persists across sessions — players keep their points between visits
+skillPoints = parseFloat(localStorage.getItem('uh_skillpoints') || '0');
 
 function saveScores() {
   if (score > highScore) highScore = score;
   totalScore += score;
-  localStorage.setItem('uh_highscore',  highScore.toFixed(1));
-  localStorage.setItem('uh_totalscore', totalScore.toFixed(1));
+  // Award skill points on death — accumulate across runs.
+  // Design intent: dying still feels rewarding. Points persist via localStorage.
+  skillPoints += Math.floor(score / 5);
+  const savedSP = parseFloat(localStorage.getItem('uh_skillpoints') || '0');
+  const totalSP = savedSP + Math.floor(score / 5);
+  localStorage.setItem('uh_skillpoints',  totalSP.toFixed(0));
+  localStorage.setItem('uh_highscore',    highScore.toFixed(1));
+  localStorage.setItem('uh_totalscore',   totalScore.toFixed(1));
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1485,50 +1493,110 @@ function drawHUD(ts) {
 
 function drawGameOver() {
   const fade = Math.min(stateTimer/400, 1);
-  const cx=canvas.width/2, cy=canvas.height/2;
+  const cx=canvas.width/2;
+  // Layout: top quarter = death info, middle = action buttons, bottom = skill menu
+  const topY   = canvas.height * 0.12;
+  const btnY   = canvas.height * 0.38;
+  const skillY = canvas.height * 0.56;
+
   ctx.save();
-  ctx.fillStyle=`rgba(10,4,28,${fade*0.88})`; ctx.fillRect(0,0,canvas.width,canvas.height);
-  if(fade>0.55){
-    const a=(fade-0.55)/0.45; ctx.globalAlpha=a;
-    ctx.fillStyle='#ff6b6b'; ctx.font='bold 28px Courier New'; ctx.textAlign='center';
-    ctx.fillText('LESTER PANICKED!', cx, cy-70);
+  ctx.fillStyle=`rgba(10,4,28,${fade*0.92})`; ctx.fillRect(0,0,canvas.width,canvas.height);
+  if(fade > 0.45){
+    const a = Math.min((fade-0.45)/0.35, 1); ctx.globalAlpha=a;
 
-    // Score this run
-    ctx.fillStyle='#ffd66b'; ctx.font='16px Courier New';
-    ctx.fillText(`Score: ${Math.floor(score)}`, cx, cy-38);
-
-    // High score
+    // ── Death header ──
+    ctx.fillStyle='#ff6b6b'; ctx.font='bold 22px Courier New'; ctx.textAlign='center';
+    ctx.fillText('LESTER PANICKED!', cx, topY);
+    ctx.fillStyle='#ffd66b'; ctx.font='14px Courier New';
+    ctx.fillText(`Score: ${Math.floor(score)}`, cx, topY+26);
     const isNew = score >= highScore && score > 0;
-    ctx.fillStyle = isNew ? '#a78bfa' : 'rgba(180,160,255,0.7)';
-    ctx.font='12px Courier New';
-    ctx.fillText(isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`, cx, cy-18);
+    ctx.fillStyle = isNew ? '#a78bfa' : 'rgba(180,160,255,0.6)';
+    ctx.font='11px Courier New';
+    ctx.fillText(isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`, cx, topY+44);
+    ctx.fillStyle='rgba(200,200,255,0.4)';
+    ctx.fillText(`All-time: ${Math.floor(totalScore)}`, cx, topY+58);
 
-    // Total
-    ctx.fillStyle='rgba(200,200,255,0.45)'; ctx.font='11px Courier New';
-    ctx.fillText(`All-time: ${Math.floor(totalScore)}`, cx, cy-2);
-
-    // Death screen options:
-    // CONTINUE = retry same chapter (score resets — new attempt)
-    // RESTART  = keep accumulated score+stats, go back to Ch1 (different from New Game)
-    // HOME     = home screen
-    const opts = ['CONTINUE', 'RESTART', 'HOME'];
-    opts.forEach((label, i) => {
-      const oy = cy + 24 + i * 32;
-      const isHov = homeMenuCursor === i;
-      ctx.fillStyle = isHov ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)';
-      ctx.beginPath(); ctx.roundRect(cx-80, oy-16, 160, 28, 6); ctx.fill();
-      ctx.strokeStyle = isHov ? 'rgba(255,214,107,0.8)' : 'rgba(255,255,255,0.15)';
-      ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(cx-80, oy-16, 160, 28, 6); ctx.stroke();
-      ctx.fillStyle = isHov ? '#ffd66b' : 'rgba(255,255,255,0.65)';
-      ctx.font = `${isHov?'bold ':''}13px Courier New`; ctx.textAlign='center';
-      ctx.fillText(label, cx, oy+1);
+    // ── Action buttons: CONTINUE | RESTART | HOME ──
+    const opts = ['CONTINUE','RESTART','HOME'];
+    const subtitles = ['retry this chapter','Ch1, keep skills','main menu'];
+    const btnW=110, btnH=30, btnGap=10;
+    const btnTotalW = opts.length*(btnW+btnGap)-btnGap;
+    const btnStartX = cx - btnTotalW/2;
+    opts.forEach((label,i)=>{
+      const bx=btnStartX+i*(btnW+btnGap), by=btnY;
+      const isHov=homeMenuCursor===i;
+      ctx.fillStyle=isHov?'rgba(255,214,107,0.18)':'rgba(255,255,255,0.05)';
+      ctx.beginPath(); ctx.roundRect(bx,by,btnW,btnH,6); ctx.fill();
+      ctx.strokeStyle=isHov?'rgba(255,214,107,0.9)':'rgba(255,255,255,0.15)';
+      ctx.lineWidth=isHov?2:1;
+      ctx.beginPath(); ctx.roundRect(bx,by,btnW,btnH,6); ctx.stroke();
+      ctx.fillStyle=isHov?'#ffd66b':'rgba(255,255,255,0.65)';
+      ctx.font=`${isHov?'bold ':''}11px Courier New`; ctx.textAlign='center';
+      ctx.fillText(label, bx+btnW/2, by+btnH/2+4);
     });
-    // Subtitle for highlighted option
-    const subtitles = ['retry this chapter','back to Ch1, keep score','main menu'];
-    ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px Courier New';
-    ctx.fillText(subtitles[homeMenuCursor]||'', cx, cy+124);
-    ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.font='10px Courier New';
-    ctx.fillText('↑↓ or tap  ·  Enter to confirm', cx, cy+138);
+    ctx.fillStyle='rgba(255,255,255,0.28)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+    ctx.fillText(subtitles[homeMenuCursor]||'', cx, btnY+btnH+14);
+    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.fillText('← → select  ·  tap or Enter to confirm', cx, btnY+btnH+26);
+
+    // ── Skill menu embedded below ──
+    // Divider
+    ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(cx-120,skillY-8); ctx.lineTo(cx+120,skillY-8); ctx.stroke();
+
+    // SP display + tab switcher
+    ctx.fillStyle='rgba(200,180,255,0.85)'; ctx.font='bold 11px Courier New'; ctx.textAlign='center';
+    ctx.fillText('✦ SKILLS', cx, skillY+4);
+    ctx.fillStyle='#ffd66b'; ctx.font='10px Courier New';
+    ctx.fillText(`SP: ${skillPoints}`, cx, skillY+18);
+
+    // Tabs
+    const tabs=['SKILLS','UNLOCKS'];
+    const tabW=80, tabH=22, tabGap=6;
+    const tabStartX=cx-(tabs.length*(tabW+tabGap)-tabGap)/2;
+    tabs.forEach((tab,i)=>{
+      const tx=tabStartX+i*(tabW+tabGap), ty=skillY+28;
+      const active=menuTab===i;
+      ctx.fillStyle=active?'rgba(167,139,250,0.3)':'rgba(255,255,255,0.04)';
+      ctx.beginPath(); ctx.roundRect(tx,ty,tabW,tabH,4); ctx.fill();
+      ctx.strokeStyle=active?'rgba(167,139,250,0.8)':'rgba(255,255,255,0.1)';
+      ctx.lineWidth=active?1.5:1;
+      ctx.beginPath(); ctx.roundRect(tx,ty,tabW,tabH,4); ctx.stroke();
+      ctx.fillStyle=active?'#fff':'rgba(255,255,255,0.35)';
+      ctx.font=`${active?'bold ':''}10px Courier New`; ctx.textAlign='center';
+      ctx.fillText(tab, tx+tabW/2, ty+tabH/2+4);
+    });
+
+    // Item list
+    const items=menuTab===0?SKILLS:UNLOCKS;
+    const listW=canvas.width*0.8, listX=cx-listW/2;
+    const rowH=32, listStartY=skillY+58;
+    items.slice(0,4).forEach((item,i)=>{  // show max 4 rows to fit screen
+      const iy=listStartY+i*rowH;
+      const isHov=skillCursor===i;
+      const bought=menuTab===0?item.stacks>0:item.owned;
+      const canAfford=skillPoints>=item.cost;
+      ctx.fillStyle=isHov?'rgba(167,139,250,0.15)':'rgba(255,255,255,0.03)';
+      ctx.beginPath(); ctx.roundRect(listX,iy,listW,rowH-3,4); ctx.fill();
+      ctx.strokeStyle=isHov?'rgba(167,139,250,0.6)':'rgba(255,255,255,0.07)';
+      ctx.lineWidth=isHov?1.5:1;
+      ctx.beginPath(); ctx.roundRect(listX,iy,listW,rowH-3,4); ctx.stroke();
+      ctx.fillStyle=bought?'#a78bfa':canAfford?'#fff':'rgba(255,255,255,0.3)';
+      ctx.font=`${isHov?'bold ':''}11px Courier New`; ctx.textAlign='left';
+      ctx.fillText(item.name, listX+10, iy+rowH/2+4);
+      ctx.textAlign='right';
+      if(menuTab===0){
+        ctx.fillStyle=item.stacks>0?'rgba(167,139,250,0.8)':canAfford?'#ffd66b':'rgba(255,255,255,0.2)';
+        ctx.font='10px Courier New';
+        ctx.fillText(item.stacks>0?`x${item.stacks} · ${item.cost}sp`:`${item.cost}sp`, listX+listW-8, iy+rowH/2+4);
+      } else {
+        ctx.fillStyle=item.owned?(item.active?'#52c97a':'rgba(255,255,255,0.4)'):canAfford?'#ffd66b':'rgba(255,255,255,0.2)';
+        ctx.font='10px Courier New';
+        ctx.fillText(item.owned?(item.toggleable?(item.active?'ON':'OFF'):'✓'):`${item.cost}sp`, listX+listW-8, iy+rowH/2+4);
+      }
+    });
+    ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.font='9px Courier New'; ctx.textAlign='center';
+    ctx.fillText('↑↓ navigate skills  ·  Space/tap to buy  ·  ←→ switch tab', cx, listStartY+4*rowH+8);
   }
   ctx.restore();
 }
@@ -1606,13 +1674,10 @@ function updateCatapult(dt) {
       // Ch3 catapult leads to skill menu then chapter card (Ch4 is TBD/stub)
       // Ch1 -> Ch2, Ch2 -> Ch3, Ch3 -> skill menu then Ch4
       if(chapter===CHAPTER.THREE){
-        // Open skill menu ONLY. The chaptercard fires AFTER player presses Continue.
-        // Do NOT set gameState='chaptercard' here — skill menu handles that.
+        // Ch3 catapult goes straight to Ch4 — no skill menu interrupt.
+        // Skill menu lives on the death screen now.
         pendingChapter=CHAPTER.FOUR;
-        skillMenuOpen=true; menuTab=0; skillCursor=0;
-        skillPoints += Math.floor(score / 5); // accumulate, don't replace
-        gameState='playing'; // keep as playing so skill menu overlay works correctly
-        stateTimer=0;
+        gameState='chaptercard'; stateTimer=0;
       } else {
         pendingChapter = chapter===CHAPTER.ONE ? CHAPTER.TWO : CHAPTER.THREE;
         gameState='chaptercard'; stateTimer=0;
@@ -1650,7 +1715,7 @@ function update(dt) {
   if(gameState==='gameover') return;
   if(gameState==='home') return;
   if(gameState==='splash') return;
-  if(skillMenuOpen) return;  // pause everything while bonfire skill menu is open
+  // skillMenu is now on death screen — doesn't pause gameplay
 
   if(gameState==='chaptercard') {
     // Wait for tap (handled in input listener)
@@ -1672,8 +1737,10 @@ function update(dt) {
   // Fog wall advance (ch1 only).
   // Fog wall — ALL chapters. Snaps to one screen behind player on first activation.
   if(chapterTimer > FOG_DELAY){
-    if(fogX < player.x - canvas.width){
-      fogX = player.x - canvas.width; // snap to one screen behind on first activation
+    // Snap fog to just off the left edge of the visible screen.
+    // Use cameraX (left world edge) minus a small margin — not full canvas.width.
+    if(fogX < cameraX - 80){
+      fogX = cameraX - 80;
     }
     fogX += FOG_SPEED * (dt / 16.67);
     if(fogX >= player.x){
@@ -1812,7 +1879,7 @@ function update(dt) {
 
   // Ch3 catapult trigger — launches player then opens skill menu in the chaptercard.
   if(chapter===CHAPTER.THREE && !bonfireReached && player.x >= CATAPULT_X3 - 80 && catapultPhase===0){
-    bonfireReached=true; // latch to prevent re-trigger
+    bonfireReached=true;
     gameState='catapult'; stateTimer=0;
     catapultPhase=1;
     catapultTimer=0;
@@ -1859,7 +1926,6 @@ function render(ts) {
   drawChargeRing(player.chargeTime/player.maxCharge);
   drawProgressBar();
   drawHUD(ts);
-  drawSkillMenu();
 
   if(gameState==='gameover')    drawGameOver();
   if(gameState==='chaptercard') drawChapterCard();
@@ -2006,9 +2072,16 @@ document.addEventListener('keydown', e=>{
 
   // Game over screen navigation
   if(gameState==='gameover'){
-    if(e.key==='ArrowDown') homeMenuCursor=Math.min(homeMenuCursor+1,2);
-    if(e.key==='ArrowUp')   homeMenuCursor=Math.max(homeMenuCursor-1,0);
-    if(e.key==='Enter')     confirmGameOver();
+    // Left/Right navigate the 3 action buttons
+    if(e.key==='ArrowRight') homeMenuCursor=Math.min(homeMenuCursor+1,2);
+    if(e.key==='ArrowLeft')  homeMenuCursor=Math.max(homeMenuCursor-1,0);
+    // Up/Down navigate skill rows
+    const goItems=menuTab===0?SKILLS:UNLOCKS;
+    if(e.key==='ArrowDown')  skillCursor=Math.min(skillCursor+1,Math.min(goItems.length-1,3));
+    if(e.key==='ArrowUp')    skillCursor=Math.max(skillCursor-1,0);
+    if(e.key==='Tab'){ menuTab=menuTab===0?1:0; skillCursor=0; e.preventDefault(); }
+    if(e.key===' ')  buyItem(skillCursor);
+    if(e.key==='Enter') confirmGameOver();
     return;
   }
 
