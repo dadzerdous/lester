@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Unlikely Hero</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="game-wrapper">
+  <canvas id="game"></canvas>
+</div>
+
+<div id="controls">
+  <div id="joystick-zone">
+    <div id="joystick-base">
+      <div id="joystick-knob"></div>
+      <div class="joystick-label">Move</div>
+    </div>
+  </div>
+  <div id="jump-zone">
+    <canvas id="charge-canvas" width="104" height="104"></canvas>
+    <div id="jump-btn">
+      <span class="btn-icon">↑</span>
+      <span class="btn-label">Jump</span>
+    </div>
+  </div>
+</div>
+
+<!--
+  Script load order matters — each file depends on the ones above it:
+  1. constants.js  — canvas, helpers, shared state, skills, scoring
+  2. levels.js     — terrain build + gen, ground checks (uses constants)
+  3. terrain.js    — world drawing: bg, stars, terrain, platforms (uses constants + levels)
+  4. enemies.js    — enemy types, spawn, update, draw (uses constants + levels)
+  5. player.js     — player state, input, character draw, fog (uses constants)
+  6. hud.js        — all screens + HUD (uses constants + skills)
+  7. game.js       — main loop, update, render, input handlers (uses everything)
+-->
+<script src="js/constants.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/terrain.js"></script>
+<script src="js/enemies.js"></script>
+<script src="js/player.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/game.js"></script>
+
+</body>
+</html>
