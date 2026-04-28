@@ -14,8 +14,10 @@ let eSpawnTimer = 0;
 // To move a creature: cut its row, paste into the target array.
 // To add a creature: add row here + drawXxx() + case in drawEnemies dispatch.
 const ETYPES_CH1 = [
-  // Ch1: Pincher only. Low, wide, predictable. Pure jump-timing tutorial.
+  // Ch1: Pincher + Swooper (temporarily added for testing swooper mechanic).
+  // Remove Swooper from this array to restore Ch1 to Pincher-only.
   {w:32,h:20,spd:1.6,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:30,h:22,spd:1.6,label:'swooper', name:'Swooper',  col:'#1a6b8a',acc:'#4dc8f0'},
 ];
 const ETYPES_CH2 = [
   // Ch2: Pincher (faster) + Idol introduced.
@@ -168,7 +170,7 @@ function updateEnemies(dt) {
     // Collision with player
     if (gameState === 'playing') {
       const m=6;
-      const ph = player.sliding ? PH*0.35 : player.crouching ? PH*0.6 : PH;
+      const ph = player.sliding ? PH*0.35 : (player.crouching||player.ducking) ? PH*0.6 : PH;
       if (player.x+PW/2-m > e.x-e.w/2 && player.x-PW/2+m < e.x+e.w/2 &&
           player.y+ph/2-m > e.y-e.h/2 && player.y-ph/2+m < e.y+e.h/2) {
 

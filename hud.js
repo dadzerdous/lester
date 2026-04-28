@@ -475,7 +475,7 @@ function drawChapterCard() {
     ctx.fillStyle=grd; ctx.fillRect(0,0,canvas.width,canvas.height);
 
     // Roman numeral chapter number — big, centered
-    const numeral = nextCh===CHAPTER.ONE?'I': nextCh===CHAPTER.TWO?'II':'III';
+    const numeral = nextCh===CHAPTER.ONE?'I': nextCh===CHAPTER.TWO?'II': nextCh===CHAPTER.THREE?'III':'IV';
     ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.font=`bold 120px Courier New`; ctx.textAlign='center';
     ctx.fillText(numeral, cx, cy+42);
 
@@ -484,8 +484,9 @@ function drawChapterCard() {
     ctx.fillText(`Chapter ${numeral}`, cx, cy-30);
 
     // Flavour line — cryptic, not a tutorial
-    const flavour = nextCh===CHAPTER.TWO ? 'Something has changed.' :
-                    nextCh===CHAPTER.THREE ? 'The world remembers.' : 'Onward.';
+    const flavour = nextCh===CHAPTER.TWO   ? 'Something has changed.' :
+                    nextCh===CHAPTER.THREE ? 'The world remembers.' :
+                    nextCh===CHAPTER.FOUR  ? 'They found you.' : 'Onward.';
     ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.font='13px Courier New';
     ctx.fillText(flavour, cx, cy-8);
 

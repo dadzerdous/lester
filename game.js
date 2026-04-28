@@ -152,19 +152,28 @@ function update(dt) {
   }
   player.x=Math.max(20, player.x+player.vx);
 
-  // Slide logic (Ch4+ only — Swooper makes it necessary).
-  // Trigger: joystick pushed down (dy>0.5) OR ArrowDown key, while moving on ground.
-  // Max slide duration: 600ms. Can't slide into a charge (different input path).
-  // Slide reduces collision height to PH*0.35 — enough to duck under Swooper.
-  // Slide: available from Ch4 onward (chapter-gated, no purchase needed).
-  // Base duration = 400ms. Slide Duration unlock adds 200ms per stack.
-  // Design intent: slide is the natural counter to Swooper which debuts in Ch4.
+  // Down input: joystick pushed down OR ArrowDown key
+  const downInput = J.dy > 0.5 || keys['ArrowDown'];
+  const isMoving  = Math.abs(player.vx) > 0.5;
+
+  // Duck (crouch without jump charge) — available always when grounded + not jumping.
+  // Holding down while still = duck. Reduces collision height, different animation.
+  // Does NOT queue a jump on release (only the jump button does that).
+  if(player.grounded && downInput && !JB.held && !keys[' '] && !player.sliding){
+    player.ducking = true;
+  } else {
+    player.ducking = false;
+  }
+
+  // Slide: Ch4+ only, requires movement. Overrides duck.
+  // Base duration = 400ms + 200ms per Slide Duration stack.
   const slideAvailable = chapter >= CHAPTER.FOUR;
   const slideDurUnlock = getUnlock('slide_dur');
   const slideMaxDur = 400 + (slideDurUnlock ? slideDurUnlock.stacks * 200 : 0);
-  const slideInput = (J.dy > 0.5 || keys['ArrowDown']) && Math.abs(player.vx) > 0.5;
+  const slideInput = downInput && isMoving;
   if(slideAvailable && player.grounded && slideInput && !player.crouching){
-    player.sliding = true;
+    player.sliding  = true;
+    player.ducking  = false; // slide overrides duck
     player.slideTimer = Math.min(player.slideTimer + dt, slideMaxDur);
   } else {
     if(player.slideTimer > 0) player.slideTimer -= dt * 2;
@@ -208,7 +217,7 @@ function update(dt) {
   const gy=GY();
   const feet=player.y+PH/2;
   // Effective player height for collisions: full, crouched, or sliding
-  const effectivePH = player.sliding ? PH*0.35 : player.crouching ? PH*0.6 : PH;
+  const effectivePH = player.sliding ? PH*0.35 : (player.crouching||player.ducking) ? PH*0.6 : PH;
   const pl=player.x-PW/2+4, pr=player.x+PW/2-4;
   player.grounded=false;
 
@@ -298,7 +307,7 @@ function render(ts) {
     const charState = player.flying ? 'jump' :
                       !player.grounded ? 'jump' :
                       player.sliding   ? 'slide' :
-                      player.crouching ? 'crouch' : 'stand';
+                      (player.crouching||player.ducking) ? 'crouch' : 'stand';
     drawCharacter(player.x-cameraX, player.y+PH/2, player.facing, player.walkFrame, charState);
   }
 

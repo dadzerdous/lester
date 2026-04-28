@@ -579,8 +579,10 @@ let eSpawnTimer = 0;
 // To move a creature: cut its row, paste into the target array.
 // To add a creature: add row here + drawXxx() + case in drawEnemies dispatch.
 const ETYPES_CH1 = [
-  // Ch1: Pincher only. Low, wide, predictable. Pure jump-timing tutorial.
+  // Ch1: Pincher + Swooper (temporarily added for testing swooper mechanic).
+  // Remove Swooper from this array to restore Ch1 to Pincher-only.
   {w:32,h:20,spd:1.6,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:30,h:22,spd:1.6,label:'swooper', name:'Swooper',  col:'#1a6b8a',acc:'#4dc8f0'},
 ];
 const ETYPES_CH2 = [
   // Ch2: Pincher (faster) + Idol introduced.
@@ -733,7 +735,7 @@ function updateEnemies(dt) {
     // Collision with player
     if (gameState === 'playing') {
       const m=6;
-      const ph = player.sliding ? PH*0.35 : player.crouching ? PH*0.6 : PH;
+      const ph = player.sliding ? PH*0.35 : (player.crouching||player.ducking) ? PH*0.6 : PH;
       if (player.x+PW/2-m > e.x-e.w/2 && player.x-PW/2+m < e.x+e.w/2 &&
           player.y+ph/2-m > e.y-e.h/2 && player.y-ph/2+m < e.y+e.h/2) {
 
@@ -1791,7 +1793,7 @@ function drawChapterCard() {
     ctx.fillStyle=grd; ctx.fillRect(0,0,canvas.width,canvas.height);
 
     // Roman numeral chapter number — big, centered
-    const numeral = nextCh===CHAPTER.ONE?'I': nextCh===CHAPTER.TWO?'II':'III';
+    const numeral = nextCh===CHAPTER.ONE?'I': nextCh===CHAPTER.TWO?'II': nextCh===CHAPTER.THREE?'III':'IV';
     ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.font=`bold 120px Courier New`; ctx.textAlign='center';
     ctx.fillText(numeral, cx, cy+42);
 
@@ -1800,8 +1802,9 @@ function drawChapterCard() {
     ctx.fillText(`Chapter ${numeral}`, cx, cy-30);
 
     // Flavour line — cryptic, not a tutorial
-    const flavour = nextCh===CHAPTER.TWO ? 'Something has changed.' :
-                    nextCh===CHAPTER.THREE ? 'The world remembers.' : 'Onward.';
+    const flavour = nextCh===CHAPTER.TWO   ? 'Something has changed.' :
+                    nextCh===CHAPTER.THREE ? 'The world remembers.' :
+                    nextCh===CHAPTER.FOUR  ? 'They found you.' : 'Onward.';
     ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.font='13px Courier New';
     ctx.fillText(flavour, cx, cy-8);
 
@@ -1967,19 +1970,28 @@ function update(dt) {
   }
   player.x=Math.max(20, player.x+player.vx);
 
-  // Slide logic (Ch4+ only — Swooper makes it necessary).
-  // Trigger: joystick pushed down (dy>0.5) OR ArrowDown key, while moving on ground.
-  // Max slide duration: 600ms. Can't slide into a charge (different input path).
-  // Slide reduces collision height to PH*0.35 — enough to duck under Swooper.
-  // Slide: available from Ch4 onward (chapter-gated, no purchase needed).
-  // Base duration = 400ms. Slide Duration unlock adds 200ms per stack.
-  // Design intent: slide is the natural counter to Swooper which debuts in Ch4.
+  // Down input: joystick pushed down OR ArrowDown key
+  const downInput = J.dy > 0.5 || keys['ArrowDown'];
+  const isMoving  = Math.abs(player.vx) > 0.5;
+
+  // Duck (crouch without jump charge) — available always when grounded + not jumping.
+  // Holding down while still = duck. Reduces collision height, different animation.
+  // Does NOT queue a jump on release (only the jump button does that).
+  if(player.grounded && downInput && !JB.held && !keys[' '] && !player.sliding){
+    player.ducking = true;
+  } else {
+    player.ducking = false;
+  }
+
+  // Slide: Ch4+ only, requires movement. Overrides duck.
+  // Base duration = 400ms + 200ms per Slide Duration stack.
   const slideAvailable = chapter >= CHAPTER.FOUR;
   const slideDurUnlock = getUnlock('slide_dur');
   const slideMaxDur = 400 + (slideDurUnlock ? slideDurUnlock.stacks * 200 : 0);
-  const slideInput = (J.dy > 0.5 || keys['ArrowDown']) && Math.abs(player.vx) > 0.5;
+  const slideInput = downInput && isMoving;
   if(slideAvailable && player.grounded && slideInput && !player.crouching){
-    player.sliding = true;
+    player.sliding  = true;
+    player.ducking  = false; // slide overrides duck
     player.slideTimer = Math.min(player.slideTimer + dt, slideMaxDur);
   } else {
     if(player.slideTimer > 0) player.slideTimer -= dt * 2;
@@ -2023,7 +2035,7 @@ function update(dt) {
   const gy=GY();
   const feet=player.y+PH/2;
   // Effective player height for collisions: full, crouched, or sliding
-  const effectivePH = player.sliding ? PH*0.35 : player.crouching ? PH*0.6 : PH;
+  const effectivePH = player.sliding ? PH*0.35 : (player.crouching||player.ducking) ? PH*0.6 : PH;
   const pl=player.x-PW/2+4, pr=player.x+PW/2-4;
   player.grounded=false;
 
@@ -2113,7 +2125,7 @@ function render(ts) {
     const charState = player.flying ? 'jump' :
                       !player.grounded ? 'jump' :
                       player.sliding   ? 'slide' :
-                      player.crouching ? 'crouch' : 'stand';
+                      (player.crouching||player.ducking) ? 'crouch' : 'stand';
     drawCharacter(player.x-cameraX, player.y+PH/2, player.facing, player.walkFrame, charState);
   }
 
