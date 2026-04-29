@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Unlikely Hero</title>
-<style>
+<style>/* style.css — Unlikely Hero */
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
   background:#0d0820; overflow:hidden;
@@ -19,7 +19,10 @@ canvas#game { display:block; width:100%; height:100%; image-rendering:pixelated;
   border-top:1px solid rgba(140,100,255,0.2);
   display:flex; align-items:center; justify-content:space-between; padding:0 44px;
 }
-#joystick-zone { width:130px; height:130px; display:flex; align-items:center; justify-content:center; touch-action:none; }
+#joystick-zone {
+  width:130px; height:130px;
+  display:flex; align-items:center; justify-content:center; touch-action:none;
+}
 #joystick-base {
   width:110px; height:110px; border-radius:50%;
   background:rgba(255,255,255,0.06); border:2px solid rgba(255,255,255,0.14);
@@ -31,41 +34,55 @@ canvas#game { display:block; width:100%; height:100%; image-rendering:pixelated;
   border:2px solid rgba(255,255,255,0.22); box-shadow:0 4px 14px rgba(0,0,0,0.5);
   position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); pointer-events:none;
 }
-#jump-zone { width:130px; height:130px; display:flex; align-items:center; justify-content:center; touch-action:none; position:relative; }
+.joystick-label {
+  position:absolute; bottom:-22px; left:50%; transform:translateX(-50%);
+  color:rgba(255,214,107,0.55); font-size:9px; letter-spacing:1px;
+  text-transform:uppercase; white-space:nowrap; pointer-events:none;
+}
+#jump-zone {
+  width:130px; height:130px;
+  display:flex; align-items:center; justify-content:center;
+  touch-action:none; position:relative;
+}
 #jump-btn {
   width:78px; height:78px; border-radius:50%;
   background:radial-gradient(circle at 35% 35%,#a78bfa,#5b21b6);
   border:2px solid rgba(255,255,255,0.2); box-shadow:0 4px 18px rgba(109,40,217,0.45);
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   color:white; pointer-events:none; gap:2px;
-  transition:transform 0.08s,box-shadow 0.08s,background 0.08s;
+  transition:transform 0.08s, box-shadow 0.08s, background 0.08s;
   position:relative; z-index:1;
 }
-#jump-btn.charging { transform:scale(0.86); box-shadow:0 2px 8px rgba(109,40,217,0.25); background:radial-gradient(circle at 35% 35%,#7c3aed,#3b0764); }
-.btn-icon { font-size:22px; line-height:1; }
+#jump-btn.charging {
+  transform:scale(0.86);
+  box-shadow:0 2px 8px rgba(109,40,217,0.25);
+  background:radial-gradient(circle at 35% 35%,#7c3aed,#3b0764);
+}
+.btn-icon  { font-size:22px; line-height:1; }
 .btn-label { font-size:9px; letter-spacing:1px; opacity:0.8; text-transform:uppercase; }
-#charge-canvas { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); pointer-events:none; z-index:0; }
+#charge-canvas {
+  position:absolute; top:50%; left:50%;
+  transform:translate(-50%,-50%); pointer-events:none; z-index:0;
+}
 </style>
 </head>
 <body>
 <div id="game-wrapper"><canvas id="game"></canvas></div>
 <div id="controls">
   <div id="joystick-zone">
-    <div id="joystick-base">
-      <div id="joystick-knob"></div>
-      <div style="position:absolute;bottom:-22px;left:50%;transform:translateX(-50%);color:rgba(255,214,107,0.55);font-size:9px;letter-spacing:1px;text-transform:uppercase;white-space:nowrap;pointer-events:none;">Move</div>
-    </div>
+    <div id="joystick-base"><div id="joystick-knob"></div><div class="joystick-label">Move</div></div>
   </div>
   <div id="jump-zone">
     <canvas id="charge-canvas" width="104" height="104"></canvas>
-    <div id="jump-btn">
-      <span class="btn-icon">↑</span>
-      <span class="btn-label">Jump</span>
-    </div>
+    <div id="jump-btn"><span class="btn-icon">↑</span><span class="btn-label">Jump</span></div>
   </div>
 </div>
-
 <script>
+// ═══ constants.js ═══
+// constants.js — canvas setup, helpers, shared state, skills, unlocks, scoring
+// Load FIRST — everything depends on this.
+
+
 // ══════════════════════════════════════════════════════════════
 //  CANVAS SETUP
 // ══════════════════════════════════════════════════════════════
@@ -112,7 +129,8 @@ let score          = 0;
 let homeMenuCursor = 0; // 0=Continue, 1=New Game, 2=How To Play
 let splashDone     = false; // latched after first splash dismiss
 let deathCount     = 0; // tracks if player has died at least once (gates home screen access)
-let howToPlayOpen  = false;
+let howToPlayOpen       = false;
+let newGameConfirmOpen  = false; // 'Are you sure?' overlay on New Game
 let cameraX        = 0;
 let lastTime       = 0;
 
@@ -226,6 +244,11 @@ const terrain   = [];
 const platforms = [];
 let   terrainHead = 0;
 
+
+// ═══ levels.js ═══
+// levels.js — level config, terrain generation, ground checks
+// Depends on: constants.js
+
 function buildTerrain() {
   terrain.length = 0;
   platforms.length = 0;
@@ -288,17 +311,19 @@ function genTerrain(upTo) {
       const pw = irnd(PIT_MIN, PIT_MAX);
       terrain.push({ type:'pit', x:terrainHead, w:pw });
 
-      // Stepping stone: Ch4+ large pits only — centred in the pit, narrow enough
-      // to require a second jump, wide enough to actually land on.
-      // Design intent: the ledge is the intended path for large pits.
-      // A maxed charge jump can still clear it — rewarding skilled players.
-      if(chapter >= CHAPTER.FOUR && pw > 160){
+      // Stepping stone: Ch3+ large pits get a platform centred in the pit.
+      // Height: 100-130px above ground — requires a deliberate jump from the edge,
+      // but NOT a full charge (that would make it feel unfair on first encounter).
+      // Width: narrow (42-56px) — you have to commit to landing on it.
+      // Design intent: for large pits this IS the intended path.
+      // Skilled players can still charge-clear the whole pit without using it.
+      if(chapter >= CHAPTER.THREE && pw > 130){
         const gy = GY();
-        const stoneW = irnd(44, 58);
+        const stoneW = irnd(42, 56);
         const stoneX = terrainHead + pw/2 - stoneW/2;
         platforms.push({
           x: stoneX,
-          y: gy - irnd(62, 82),
+          y: gy - irnd(100, 130),   // high — requires a real jump, not a tap
           w: stoneW, h: 12,
           style: 'stone',
           isStepping: true,
@@ -343,275 +368,10 @@ function isGroundAt(worldX) {
 
 // ══════════════════════════════════════════════════════════════
 //  PLAYER
-// ══════════════════════════════════════════════════════════════
-const PW=28, PH=48;
-const player = {
-  x:80, y:0, vx:0, vy:0,   // start near left edge of world so progress bar dot starts left
-  grounded:false, facing:1,
-  walkFrame:0,
-  crouching:false, chargeTime:0, maxCharge:650, jumpQueued:false,
-  sliding:false,   // true while slide is active (down+moving on ground)
-  slideTimer:0,    // slide duration limiter (max 600ms per slide)
-  flying:false,
-};
 
-function resetPlayer() {
-  player.x=80; player.y=GY()-PH/2;
-  player.vx=0; player.vy=0;
-  player.grounded=false; player.crouching=false;
-  player.chargeTime=0; player.jumpQueued=false;
-  player.walkFrame=0; player.facing=1; player.flying=false;
-}
-
-// ══════════════════════════════════════════════════════════════
-//  ENEMIES
-// ══════════════════════════════════════════════════════════════
-const enemies = [];
-let eSpawnTimer = 0;
-
-// ── Creature roster ────────────────────────────────────────
-// label = internal dispatch key (used in draw switch + update)
-// name  = display name shown briefly on spawn
-// Chapter assignment: controlled by which ETYPES_CHx array the entry lives in.
-// To move a creature: cut its row, paste into the target array.
-// To add a creature: add row here + drawXxx() + case in drawEnemies dispatch.
-const ETYPES_CH1 = [
-  // Ch1: Pincher only. Low, wide, predictable. Pure jump-timing tutorial.
-  {w:32,h:20,spd:1.6,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
-];
-const ETYPES_CH2 = [
-  // Ch2: Pincher (faster) + Idol introduced.
-  // Idol is tall and narrow — teaches that not all threats have the same clearance height.
-  {w:32,h:20,spd:1.8,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
-  {w:18,h:42,spd:1.4,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
-];
-const ETYPES_CH3 = [
-  // Ch3: Pincher + Idol return. Shellback + Bounder introduced.
-  // Bounder's hop combined with pits/platforms makes Ch3 the first truly complex chapter.
-  {w:32,h:20,spd:2.0,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
-  {w:18,h:42,spd:1.6,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
-  {w:28,h:26,spd:1.4,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
-  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
-  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'}, // double weight
-];
-const ETYPES_CH4 = [
-  // Ch4: All prior creatures + Swooper introduced.
-  // Swooper is a flying enemy that dives down — requires slide or timing to avoid.
-  // Slide (hold-down while running) is unlocked in Ch4 as the new mechanic.
-  {w:32,h:20,spd:2.2,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
-  {w:18,h:42,spd:1.8,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
-  {w:28,h:26,spd:1.6,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
-  {w:24,h:28,spd:2.0,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
-  {w:30,h:22,spd:2.0,label:'swooper', name:'Swooper',  col:'#1a6b8a',acc:'#4dc8f0'},
-];
-
-function getETypes() {
-  if(chapter===CHAPTER.ONE)  return ETYPES_CH1;
-  if(chapter===CHAPTER.TWO)  return ETYPES_CH2;
-  if(chapter===CHAPTER.THREE)return ETYPES_CH3;
-  return ETYPES_CH4;
-}
-
-function spawnEnemy() {
-  const pool = getETypes();
-  const t = pool[irnd(0, pool.length-1)];
-  const spawnX = player.x + canvas.width * 0.65 + rnd(0, 200);
-  // Only spawn on ground
-  if (!isGroundAt(spawnX)) return;
-  const isSwooper = t.label==='swooper';
-  // Swooper spawns near the top of the canvas, flies horizontally, then dives.
-  // baseY is the hover altitude — it only dives down to player's HEAD level, not feet.
-  // This means: jump to dodge (get above it) OR slide (stay below its path).
-  const spawnY = isSwooper ? 40 + rnd(0, 30) : GY() - t.h/2;
-  enemies.push({
-    x: spawnX,
-    y: spawnY,
-    w:t.w, h:t.h, spd: t.spd + score*0.003,
-    label:t.label, name:t.name, col:t.col, acc:t.acc,
-    anim: rnd(0, Math.PI*2),
-    grounded: !isSwooper,
-    vy: 0,
-    hopTimer: rnd(0, 1200),   // stagger hopper timing so they don't all bounce in sync
-    swoopTimer: rnd(800,2000), // ms before first dive
-    swooping: false,           // true while actively diving
-    locked:   false,           // true once swooper has reached its target height and flies flat
-    baseY: spawnY,             // hover altitude before locking
-    nameTimer: 1800,
-  });
-}
-
-function updateEnemies(dt) {
-  if (gameState !== 'playing') return;
-
-  eSpawnTimer += dt;
-  const interval = Math.max(1400, 3500 - score * 12);
-  if (eSpawnTimer >= interval) { spawnEnemy(); eSpawnTimer = 0; }
-
-  const gy = GY();
-  for (let i = enemies.length-1; i >= 0; i--) {
-    const e = enemies[i];
-    e.x  -= e.spd;
-    e.anim += dt * 0.004;
-    if(e.nameTimer > 0) e.nameTimer -= dt;
-
-    // Gravity for enemies (so they fall into pits)
-    if (!e.grounded) e.vy += 0.55;
-    e.y += e.vy;
-
-    // Check ground under enemy
-    const eGround = isGroundAt(e.x);
-    if (e.y + e.h/2 >= gy) {
-      if (!eGround) {
-        enemies.splice(i, 1);
-        // No score for pit kills — stomp kills will be added later.
-        continue;
-      } else {
-        e.y = gy - e.h/2; e.vy = 0; e.grounded = true;
-      }
-    } else {
-      if (e.grounded && !isGroundAt(e.x)) e.grounded = false;
-    }
-
-    // Hopper hop logic — periodic small bounce.
-    // Design intent: hop interval ~1.5s, upward velocity is ~40% of player min jump.
-    // This makes the hopper's effective height variable and unpredictable.
-    if(e.label==='hopper' && e.grounded){
-      e.hopTimer += dt;
-      if(e.hopTimer > 1500){
-        e.vy = -5.5;  // small hop — enough to be awkward, not enough to sail over pits
-        e.grounded = false;
-        e.hopTimer = 0;
-      }
-    }
-
-    // ── Swooper flight + dive logic ──────────────────────────
-    // Swooper spawns near the top of the canvas, dives toward player HEAD level.
-    // Pull-out happens at player head height — not ground.
-    // Player counters: jump OVER the swoop path, or SLIDE under it.
-    if(e.label === 'swooper'){
-      if(!e.locked){
-        // Hovering phase: wait then dive
-        e.swoopTimer -= dt;
-        if(e.swoopTimer <= 0 && !e.swooping){
-          e.swooping = true;
-          e.vy = 5; // dive speed
-        }
-        if(e.swooping){
-          e.y += e.vy;
-          // Lock at player head height (or just above ground if player is jumping high)
-          const targetY = Math.min(player.y - PH/2, GY() - e.h - 8);
-          if(e.y >= targetY){
-            e.y = targetY;  // snap to exact locked height
-            e.locked = true; // now frozen at this Y forever — just flies left
-            e.swooping = false;
-          }
-        } else {
-          // Gentle hover before dive
-          e.y = e.baseY + Math.sin(e.anim * 2) * 4;
-        }
-      }
-      // Once locked: e.y stays constant — swooper flies flat at that height.
-      // Player must be above it (jumped) or below it (slid) when it passes.
-      // No ground/pit physics for swooper ever.
-    }
-
-    // Remove if far behind or in catapult zone
-    if (e.x < player.x - canvas.width * 1.5) { enemies.splice(i, 1); continue; }
-
-    // Collision with player
-    if (gameState === 'playing') {
-      const m=6;
-      const ph = player.crouching ? PH*0.6 : PH;
-      if (player.x+PW/2-m > e.x-e.w/2 && player.x-PW/2+m < e.x+e.w/2 &&
-          player.y+ph/2-m > e.y-e.h/2 && player.y-ph/2+m < e.y+e.h/2) {
-        gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores();
-      }
-    }
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  INPUT
-// ══════════════════════════════════════════════════════════════
-const jBase = document.getElementById('joystick-base');
-const jKnob = document.getElementById('joystick-knob');
-const jZone = document.getElementById('joystick-zone');
-const J = { active:false, tid:null, bx:0, by:0, dx:0, dy:0, maxR:42 };
-
-jZone.addEventListener('touchstart',e=>{
-  e.preventDefault(); if(J.active) return;
-  const t=e.changedTouches[0]; J.active=true; J.tid=t.identifier;
-  const r=jBase.getBoundingClientRect(); J.bx=r.left+r.width/2; J.by=r.top+r.height/2;
-  moveJ(t.clientX,t.clientY);
-},{passive:false});
-jZone.addEventListener('touchmove',e=>{
-  e.preventDefault();
-  for(const t of e.changedTouches) if(t.identifier===J.tid) moveJ(t.clientX,t.clientY);
-},{passive:false});
-['touchend','touchcancel'].forEach(ev=>jZone.addEventListener(ev,e=>{
-  for(const t of e.changedTouches) if(t.identifier===J.tid){
-    J.active=false; J.dx=0; jKnob.style.transform='translate(-50%,-50%)';
-  }
-}));
-function moveJ(cx,cy){
-  let dx=cx-J.bx, dy=cy-J.by;
-  const dist=Math.sqrt(dx*dx+dy*dy);
-  if(dist>J.maxR){dx=dx/dist*J.maxR; dy=dy/dist*J.maxR;}
-  J.dx=dx/J.maxR;
-  J.dy=dy/J.maxR;  // track vertical for slide detection
-  jKnob.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;
-}
-
-const jBtnEl  = document.getElementById('jump-btn');
-const jIcon   = jBtnEl.querySelector('.btn-icon');
-const jLabelEl= jBtnEl.querySelector('.btn-label');
-const jZoneEl = document.getElementById('jump-zone');
-const JB = { held:false, tid:null, justReleased:false };
-
-jZoneEl.addEventListener('touchstart',e=>{
-  e.preventDefault(); if(JB.held) return;
-  JB.held=true; JB.justReleased=false; JB.tid=e.changedTouches[0].identifier;
-  if(chapter===CHAPTER.TWO){
-    jBtnEl.classList.add('charging'); jIcon.textContent='↓'; jLabelEl.textContent='Hold';
-  }
-},{passive:false});
-['touchend','touchcancel'].forEach(ev=>jZoneEl.addEventListener(ev,e=>{
-  for(const t of e.changedTouches) if(t.identifier===JB.tid){
-    JB.justReleased=true;
-    if(chapter===CHAPTER.TWO && player.crouching) player.jumpQueued=true;
-    JB.held=false; jBtnEl.classList.remove('charging'); jIcon.textContent='↑'; jLabelEl.textContent='Jump';
-  }
-}));
-
-const keys={};
-document.addEventListener('keydown',e=>{
-  if(!keys[e.key]) {
-    if(e.key===' ') JB.justReleased=false; // handled on up
-  }
-  keys[e.key]=true;
-});
-document.addEventListener('keyup',e=>{
-  if(e.key===' '){
-    JB.justReleased=true;
-    if(chapter===CHAPTER.TWO && player.crouching) player.jumpQueued=true;
-  }
-  keys[e.key]=false;
-});
-
-// ══════════════════════════════════════════════════════════════
-//  CHARGE RING
-// ══════════════════════════════════════════════════════════════
-function drawChargeRing(pct) {
-  chargeCtx.clearRect(0,0,104,104);
-  if(pct<=0||chapter===CHAPTER.ONE) return;
-  const cx=52,cy=52,r=48;
-  chargeCtx.beginPath(); chargeCtx.arc(cx,cy,r,-Math.PI/2,Math.PI*1.5);
-  chargeCtx.strokeStyle='rgba(255,255,255,0.07)'; chargeCtx.lineWidth=5; chargeCtx.stroke();
-  const g=chargeCtx.createLinearGradient(0,0,104,104);
-  g.addColorStop(0,'#ffd66b'); g.addColorStop(1,'#a78bfa');
-  chargeCtx.beginPath(); chargeCtx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+Math.PI*2*pct);
-  chargeCtx.strokeStyle=g; chargeCtx.lineWidth=5; chargeCtx.lineCap='round'; chargeCtx.stroke();
-}
+// ═══ terrain.js ═══
+// terrain.js — world drawing: background, stars, mountains, trees, terrain, platforms
+// Depends on: constants.js, levels.js
 
 // ══════════════════════════════════════════════════════════════
 //  BACKGROUND / WORLD DRAWING
@@ -631,16 +391,52 @@ function ch2Tint(col, alpha=1) {
   return chapter===CHAPTER.TWO ? col : col;
 }
 
-function drawBg() {
-  let sky;
-  if (chapter===CHAPTER.ONE) {
-    sky=ctx.createLinearGradient(0,0,0,canvas.height);
+// Cloud data for Ch4 — generated once, parallax scrolled
+const clouds = Array.from({length:12},(_,i)=>({
+  x: i*300 + Math.random()*200,
+  y: 30 + Math.random()*120,
+  w: 80 + Math.random()*120,
+  h: 30 + Math.random()*40,
+  spd: 0.08 + Math.random()*0.06,  // parallax speed
+}));
+
+function drawBg(ts) {
+  let sky = ctx.createLinearGradient(0,0,0,canvas.height);
+  if(chapter===CHAPTER.ONE){
+    // Ch1: deep night — mysterious, unknown world
     sky.addColorStop(0,'#0d0820'); sky.addColorStop(0.65,'#1a1040'); sky.addColorStop(1,'#2d1a5e');
-  } else {
-    sky=ctx.createLinearGradient(0,0,0,canvas.height);
+  } else if(chapter===CHAPTER.TWO){
+    // Ch2: blood crimson — tension rising, fog and pits introduced
     sky.addColorStop(0,'#1a0810'); sky.addColorStop(0.5,'#3d1020'); sky.addColorStop(1,'#5c2040');
+  } else if(chapter===CHAPTER.THREE){
+    // Ch3: deep teal/forest — Lester finding his footing, platforms emerge
+    sky.addColorStop(0,'#031a18'); sky.addColorStop(0.5,'#0a3530'); sky.addColorStop(1,'#1a5040');
+  } else {
+    // Ch4: stormy amber — the world at its most dangerous, Swoopers debut
+    sky.addColorStop(0,'#1a1000'); sky.addColorStop(0.5,'#3d2500'); sky.addColorStop(1,'#5c3800');
   }
   ctx.fillStyle=sky; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Ch4 storm clouds — dark rolling shapes with amber underlighting
+  if(chapter===CHAPTER.FOUR){
+    const t=(ts||0)*0.001;
+    clouds.forEach(cl=>{
+      const sx=((cl.x - cameraX*cl.spd)%canvas.width+canvas.width*1.5)%(canvas.width*1.5)-canvas.width*0.25;
+      // Cloud body
+      const cg=ctx.createRadialGradient(sx,cl.y,0,sx,cl.y,cl.w/2);
+      cg.addColorStop(0,'rgba(60,35,5,0.75)');
+      cg.addColorStop(0.6,'rgba(40,22,2,0.5)');
+      cg.addColorStop(1,'rgba(20,10,0,0)');
+      ctx.fillStyle=cg;
+      ctx.beginPath(); ctx.ellipse(sx,cl.y,cl.w/2,cl.h/2,0,0,Math.PI*2); ctx.fill();
+      // Amber underlighting — storm glow
+      const ug=ctx.createRadialGradient(sx,cl.y+cl.h/2,0,sx,cl.y+cl.h/2,cl.w/2.5);
+      ug.addColorStop(0,'rgba(255,120,0,0.12)');
+      ug.addColorStop(1,'rgba(255,120,0,0)');
+      ctx.fillStyle=ug;
+      ctx.beginPath(); ctx.ellipse(sx,cl.y+cl.h/2,cl.w/2.5,cl.h/3,0,0,Math.PI*2); ctx.fill();
+    });
+  }
 }
 
 function drawStars(ts) {
@@ -669,7 +465,9 @@ function drawBgTrees() {
     const sx=wx(tr.x);
     if(sx<-60||sx>canvas.width+60) return;
     if(!isGroundAt(tr.x)) return;
-    const trunk = chapter===CHAPTER.TWO ? '#2a0d18' : '#1a0d38';
+    const trunk = chapter===CHAPTER.TWO ? '#2a0d18' :
+                  chapter===CHAPTER.THREE ? '#0a2a1a' :
+                  chapter===CHAPTER.FOUR  ? '#1a0d00' : '#1a0d38';
     ctx.fillStyle=trunk; ctx.fillRect(sx-4,GY()-tr.h,8,tr.h);
     [0,0.35,0.65].forEach((off,i)=>{
       const lw=(1-off)*34+10, lh=tr.h*0.45;
@@ -679,9 +477,10 @@ function drawBgTrees() {
       ctx.lineTo(sx+lw/2,GY()-tr.h+off*tr.h*0.5+lh*0.5);
       ctx.closePath();
       const d=30+i*15;
-      const r2 = chapter===CHAPTER.TWO ? d*1.5|0 : d;
-      const g2 = chapter===CHAPTER.TWO ? d*0.6|0 : d*1.4|0;
-      const b2 = chapter===CHAPTER.TWO ? d*0.8|0 : d*2.2|0;
+      // Tree colors per chapter — reinforce the world palette shift
+      const r2 = chapter===CHAPTER.TWO ? d*1.5|0 : chapter===CHAPTER.FOUR ? d*1.8|0 : d*0.4|0;
+      const g2 = chapter===CHAPTER.TWO ? d*0.6|0 : chapter===CHAPTER.THREE ? d*2.0|0 : chapter===CHAPTER.FOUR ? d*0.8|0 : d*1.4|0;
+      const b2 = chapter===CHAPTER.TWO ? d*0.8|0 : chapter===CHAPTER.THREE ? d*1.2|0 : chapter===CHAPTER.FOUR ? d*0.2|0 : d*2.2|0;
       ctx.fillStyle=`rgb(${r2},${g2},${b2})`; ctx.fill();
     });
   });
@@ -689,9 +488,15 @@ function drawBgTrees() {
 
 function drawTerrain() {
   const gy=GY();
-  const groundCol = chapter===CHAPTER.TWO ? '#2d1020' : '#1e0d40';
-  const glowTop   = chapter===CHAPTER.TWO ? 'rgba(255,80,80,0.5)' : 'rgba(140,100,255,0.55)';
-  const tileCol   = chapter===CHAPTER.TWO ? 'rgba(200,60,80,0.22)' : 'rgba(120,80,220,0.22)';
+  const groundCol = chapter===CHAPTER.TWO ? '#2d1020' :
+                    chapter===CHAPTER.THREE ? '#0a2a20' :
+                    chapter===CHAPTER.FOUR  ? '#2a1800' : '#1e0d40';
+  const glowTop   = chapter===CHAPTER.TWO ? 'rgba(255,80,80,0.5)' :
+                    chapter===CHAPTER.THREE ? 'rgba(40,220,120,0.45)' :
+                    chapter===CHAPTER.FOUR  ? 'rgba(255,140,20,0.5)' : 'rgba(140,100,255,0.55)';
+  const tileCol   = chapter===CHAPTER.TWO ? 'rgba(200,60,80,0.22)' :
+                    chapter===CHAPTER.THREE ? 'rgba(40,180,100,0.18)' :
+                    chapter===CHAPTER.FOUR  ? 'rgba(220,120,20,0.22)' : 'rgba(120,80,220,0.22)';
 
   for(const seg of terrain){
     const sx=wx(seg.x);
@@ -746,6 +551,232 @@ function drawPlatforms() {
     }
     ctx.fillStyle='rgba(0,0,0,0.22)'; ctx.beginPath();
     ctx.ellipse(sx+p.w/2,p.y+p.h+5,p.w/2-4,4,0,0,Math.PI*2); ctx.fill();
+  }
+}
+
+
+// ═══ enemies.js ═══
+// enemies.js — enemy types, spawn, update logic, all draw functions
+// Depends on: constants.js, levels.js
+
+// ══════════════════════════════════════════════════════════════
+//  ENEMIES
+// ══════════════════════════════════════════════════════════════
+const enemies = [];
+let eSpawnTimer = 0;
+let lastSpawnX  = -9999; // world X of last spawned enemy — prevents clustering
+
+// ── Creature roster ────────────────────────────────────────
+// label = internal dispatch key (used in draw switch + update)
+// name  = display name shown briefly on spawn
+// Chapter assignment: controlled by which ETYPES_CHx array the entry lives in.
+// To move a creature: cut its row, paste into the target array.
+// To add a creature: add row here + drawXxx() + case in drawEnemies dispatch.
+const ETYPES_CH1 = [
+  // Ch1: Pincher + Swooper (temporarily added for testing swooper mechanic).
+  // Remove Swooper from this array to restore Ch1 to Pincher-only.
+  {w:32,h:20,spd:1.6,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:30,h:22,spd:1.6,label:'swooper', name:'Swooper',  col:'#1a6b8a',acc:'#4dc8f0'},
+];
+const ETYPES_CH2 = [
+  // Ch2: Pincher (faster) + Idol introduced.
+  // Idol is tall and narrow — teaches that not all threats have the same clearance height.
+  {w:32,h:20,spd:1.8,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.4,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+];
+const ETYPES_CH3 = [
+  // Ch3: Pincher + Idol return. Shellback + Bounder introduced.
+  // Bounder's hop combined with pits/platforms makes Ch3 the first truly complex chapter.
+  {w:32,h:20,spd:2.0,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.6,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+  {w:28,h:26,spd:1.4,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
+  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
+  {w:24,h:28,spd:1.8,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'}, // double weight
+];
+const ETYPES_CH4 = [
+  // Ch4: All prior creatures + Swooper introduced.
+  // Swooper is a flying enemy that dives down — requires slide or timing to avoid.
+  // Slide (hold-down while running) is unlocked in Ch4 as the new mechanic.
+  {w:32,h:20,spd:2.2,label:'crab',    name:'Pincher',  col:'#e84c3d',acc:'#ff7c6e'},
+  {w:18,h:42,spd:1.8,label:'totem',   name:'Idol',     col:'#8b6914',acc:'#c9a227'},
+  {w:28,h:26,spd:1.6,label:'turtle',  name:'Shellback',col:'#2e8b57',acc:'#52c97a'},
+  {w:24,h:28,spd:2.0,label:'hopper',  name:'Bounder',  col:'#5b2d8e',acc:'#b86ee8'},
+  {w:30,h:22,spd:2.0,label:'swooper', name:'Swooper',  col:'#1a6b8a',acc:'#4dc8f0'},
+];
+
+function getETypes() {
+  if(chapter===CHAPTER.ONE)  return ETYPES_CH1;
+  if(chapter===CHAPTER.TWO)  return ETYPES_CH2;
+  if(chapter===CHAPTER.THREE)return ETYPES_CH3;
+  return ETYPES_CH4;
+}
+
+function spawnEnemy() {
+  const pool = getETypes();
+  const t = pool[irnd(0, pool.length-1)];
+  const spawnX = player.x + canvas.width * 0.65 + rnd(0, 200);
+  // Only spawn on ground
+  const isSwooper = t.label==='swooper';
+  // Minimum world-space gap between any two enemies.
+  // Prevents clusters that make sections impassable.
+  // Ground and air enemies share the same gap budget.
+  const MIN_ENEMY_GAP = 220;
+  if(spawnX - lastSpawnX < MIN_ENEMY_GAP) return false;
+  if (!isSwooper && !isGroundAt(spawnX)) return false;
+  // Swooper spawns at a fixed high canvas Y — independent of player position.
+  // It hovers there, then periodically dips toward the player's head level.
+  // Using a fixed canvas Y prevents jitter from player vertical movement.
+  // Swooper hovers one full swooper-height above player's head.
+  // Player head = GY() - PH. Spawns t.h above that, so it's clearly in view.
+  // Spawn two full swooper-heights above player head — clearly visible, not cramped
+  const spawnY = isSwooper ? GY() - PH - t.h*2 - rnd(10, 20) : GY() - t.h/2;
+  enemies.push({
+    x: spawnX,
+    y: spawnY,
+    w:t.w, h:t.h, spd: t.spd + score*0.003,
+    label:t.label, name:t.name, col:t.col, acc:t.acc,
+    anim: rnd(0, Math.PI*2),
+    grounded: !isSwooper,
+    vy: 0,
+    hopTimer: rnd(0, 1200),   // stagger hopper timing so they don't all bounce in sync
+    swoopTimer: rnd(1200,2500), // ms before first dip
+    swooping:   false,           // true during active dip cycle
+    swoopPhase: 'down',          // 'down' | 'hold' | 'up'
+    swoopHold:  0,               // ms spent at bottom of dip
+    baseY: spawnY,               // fixed hover altitude (canvas Y, not world Y)
+    nameTimer: 1800,
+  });
+  lastSpawnX = spawnX;
+  return true; // successfully spawned
+}
+
+function updateEnemies(dt) {
+  if (gameState !== 'playing') return;
+
+  eSpawnTimer += dt;
+  const interval = Math.max(1400, 3500 - score * 12);
+  if (eSpawnTimer >= interval) {
+    const spawned = spawnEnemy();
+    if(spawned) eSpawnTimer = 0;
+    else eSpawnTimer = interval * 0.6; // retry sooner if spawn was blocked
+  }
+
+  const gy = GY();
+  for (let i = enemies.length-1; i >= 0; i--) {
+    const e = enemies[i];
+    e.x  -= e.spd;
+    e.anim += dt * 0.004;
+    if(e.nameTimer > 0) e.nameTimer -= dt;
+
+    // Gravity for enemies (so they fall into pits)
+    if (!e.grounded) e.vy += 0.55;
+    e.y += e.vy;
+
+    // Check ground under enemy
+    const eGround = isGroundAt(e.x);
+    if (e.y + e.h/2 >= gy) {
+      if (!eGround) {
+        enemies.splice(i, 1);
+        // No score for pit kills — stomp kills will be added later.
+        continue;
+      } else {
+        e.y = gy - e.h/2; e.vy = 0; e.grounded = true;
+      }
+    } else {
+      if (e.grounded && !isGroundAt(e.x)) e.grounded = false;
+    }
+
+    // Hopper hop logic — periodic small bounce.
+    // Design intent: hop interval ~1.5s, upward velocity is ~40% of player min jump.
+    // This makes the hopper's effective height variable and unpredictable.
+    if(e.label==='hopper' && e.grounded){
+      e.hopTimer += dt;
+      if(e.hopTimer > 1500){
+        e.vy = -5.5;  // small hop — enough to be awkward, not enough to sail over pits
+        e.grounded = false;
+        e.hopTimer = 0;
+      }
+    }
+
+    // ── Swooper flight + dive logic ──────────────────────────
+    // Swooper spawns near the top of the canvas, dives toward player HEAD level.
+    // Pull-out happens at player head height — not ground.
+    // Player counters: jump OVER the swoop path, or SLIDE under it.
+    if(e.label === 'swooper'){
+      // Swooper hovers at baseY (fixed canvas altitude set on spawn).
+      // Every swoopTimer ms it dips smoothly down to player's head level,
+      // holds there briefly, then rises back to baseY.
+      // Player reads: if swooper is descending → jump or slide NOW.
+      // baseY is fixed so hover doesn't jitter with player vertical movement.
+
+      e.swoopTimer -= dt;
+
+      if(!e.swooping && e.swoopTimer <= 0){
+        e.swooping   = true;
+        e.swoopPhase = 'down'; // 'down' → 'hold' → 'up'
+        e.swoopHold  = 0;
+      }
+
+      if(e.swooping){
+        // Target = top of Lester's head. Never goes to ground.
+        // player.y is centre; player.y - PH/2 = top of head.
+        const targetY = Math.min(player.y - PH/2, GY() - e.h - 20);
+        if(e.swoopPhase === 'down'){
+          e.y += 4.5;   // fast descent
+          if(e.y >= targetY){ e.y = targetY; e.swoopPhase = 'hold'; e.swoopHold = 0; }
+        } else if(e.swoopPhase === 'hold'){
+          e.swoopHold += dt;
+          if(e.swoopHold > 700){ e.swoopPhase = 'up'; } // hold at head level — long enough to react
+        } else {
+          e.y -= 3.0;   // rise back up
+          if(e.y <= e.baseY){ e.y = e.baseY; e.swooping = false; e.swoopTimer = rnd(1500,3000); }
+        }
+      } else {
+        // Gentle hover bob at base altitude
+        e.y = e.baseY + Math.sin(e.anim * 1.8) * 5;
+      }
+
+      e.y = Math.max(10, Math.min(GY() - e.h - 8, e.y));
+    }
+
+    // Remove if far behind or in catapult zone
+    if (e.x < player.x - canvas.width * 1.5) { enemies.splice(i, 1); continue; }
+
+    // Collision with player
+    if (gameState === 'playing') {
+      const m=6;
+      const ph = player.sliding ? PH*0.35 : (player.crouching||player.ducking) ? PH*0.6 : PH;
+      if (player.x+PW/2-m > e.x-e.w/2 && player.x-PW/2+m < e.x+e.w/2 &&
+          player.y+ph/2-m > e.y-e.h/2 && player.y-ph/2+m < e.y+e.h/2) {
+
+        // Stomp kill: player falling and their centre is above enemy centre.
+        // Requires Stomp unlock. Rewards aggressive play (Mario feel).
+        const stompUnlock = getUnlock('stomp');
+        const playerAbove   = player.y < e.y - e.h * 0.25;
+        const playerFalling = player.vy > 0;
+        if(stompUnlock && stompUnlock.owned && playerAbove && playerFalling){
+          player.vy = -10;       // bounce Lester upward
+          player.grounded = false;
+          score += 25;           // stomp bonus
+          enemies.splice(i, 1);
+          continue;
+        }
+
+        // Shield: absorb the hit, break the shield, destroy the enemy.
+        // Shield repairs after 8s (see game.js). One hit per shield charge.
+        const shieldUnlock = getUnlock('shield');
+        if(shieldUnlock && shieldUnlock.owned && !player.shieldBroken){
+          player.shieldBroken      = true;
+          player.shieldFlash       = 400; // ms red flash
+          player.shieldRepairTimer = 0;
+          enemies.splice(i, 1);
+          continue;
+        }
+
+        // No protection — game over
+        gameState='gameover'; stateTimer=0; deathCount++; homeMenuCursor=0; saveScores();
+      }
+    }
   }
 }
 
@@ -955,6 +986,130 @@ function drawTurtle(e){
 // ══════════════════════════════════════════════════════════════
 //  CHARACTER DRAWING
 // ══════════════════════════════════════════════════════════════
+
+// ═══ player.js ═══
+// player.js — player state, input handling, charge ring, character drawing, fog drawing
+// Depends on: constants.js
+
+// ══════════════════════════════════════════════════════════════
+const PW=28, PH=48;
+const player = {
+  x:80, y:0, vx:0, vy:0,   // start near left edge of world so progress bar dot starts left
+  grounded:false, facing:1,
+  walkFrame:0,
+  crouching:false, chargeTime:0, maxCharge:650, jumpQueued:false,
+  sliding:false,   // true while slide is active (down+moving on ground)
+  slideTimer:0,    // slide duration limiter (max 600ms per slide)
+  flying:false,
+};
+
+function resetPlayer() {
+  player.x=80; player.y=GY()-PH/2;
+  player.vx=0; player.vy=0;
+  player.grounded=false; player.crouching=false;
+  player.chargeTime=0; player.jumpQueued=false;
+  player.walkFrame=0; player.facing=1; player.flying=false;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  INPUT
+// ══════════════════════════════════════════════════════════════
+const jBase = document.getElementById('joystick-base');
+const jKnob = document.getElementById('joystick-knob');
+const jZone = document.getElementById('joystick-zone');
+const J = { active:false, tid:null, bx:0, by:0, dx:0, dy:0, maxR:42 };
+
+jZone.addEventListener('touchstart',e=>{
+  e.preventDefault(); if(J.active) return;
+  const t=e.changedTouches[0]; J.active=true; J.tid=t.identifier;
+  const r=jBase.getBoundingClientRect(); J.bx=r.left+r.width/2; J.by=r.top+r.height/2;
+  moveJ(t.clientX,t.clientY);
+},{passive:false});
+jZone.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  for(const t of e.changedTouches) if(t.identifier===J.tid) moveJ(t.clientX,t.clientY);
+},{passive:false});
+['touchend','touchcancel'].forEach(ev=>jZone.addEventListener(ev,e=>{
+  for(const t of e.changedTouches) if(t.identifier===J.tid){
+    J.active=false; J.dx=0; jKnob.style.transform='translate(-50%,-50%)';
+  }
+}));
+function moveJ(cx,cy){
+  let dx=cx-J.bx, dy=cy-J.by;
+  const dist=Math.sqrt(dx*dx+dy*dy);
+  if(dist>J.maxR){dx=dx/dist*J.maxR; dy=dy/dist*J.maxR;}
+  J.dx=dx/J.maxR;
+  J.dy=dy/J.maxR;  // track vertical for slide detection
+  jKnob.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;
+}
+
+const jBtnEl  = document.getElementById('jump-btn');
+const jIcon   = jBtnEl.querySelector('.btn-icon');
+const jLabelEl= jBtnEl.querySelector('.btn-label');
+const jZoneEl = document.getElementById('jump-zone');
+const JB = { held:false, tid:null, justReleased:false };
+
+jZoneEl.addEventListener('touchstart',e=>{
+  e.preventDefault(); if(JB.held) return;
+  JB.held=true; JB.justReleased=false; JB.tid=e.changedTouches[0].identifier;
+  if(chapter===CHAPTER.TWO){
+    jBtnEl.classList.add('charging'); jIcon.textContent='↓'; jLabelEl.textContent='Hold';
+  }
+},{passive:false});
+['touchend','touchcancel'].forEach(ev=>jZoneEl.addEventListener(ev,e=>{
+  for(const t of e.changedTouches) if(t.identifier===JB.tid){
+    JB.justReleased=true;
+    if(chapter===CHAPTER.TWO && player.crouching) player.jumpQueued=true;
+    JB.held=false; jBtnEl.classList.remove('charging'); jIcon.textContent='↑'; jLabelEl.textContent='Jump';
+  }
+}));
+
+const keys={};
+document.addEventListener('keydown',e=>{
+  if(!keys[e.key]) {
+    if(e.key===' ') JB.justReleased=false; // handled on up
+  }
+  keys[e.key]=true;
+});
+document.addEventListener('keyup',e=>{
+  if(e.key===' '){
+    JB.justReleased=true;
+    if(chapter===CHAPTER.TWO && player.crouching) player.jumpQueued=true;
+  }
+  keys[e.key]=false;
+});
+
+// ══════════════════════════════════════════════════════════════
+//  CHARGE RING
+// ══════════════════════════════════════════════════════════════
+function drawChargeRing(pct) {
+  chargeCtx.clearRect(0,0,104,104);
+  if(pct<=0||chapter===CHAPTER.ONE) return;
+  const cx=52,cy=52,r=48;
+  chargeCtx.beginPath(); chargeCtx.arc(cx,cy,r,-Math.PI/2,Math.PI*1.5);
+  chargeCtx.strokeStyle='rgba(255,255,255,0.07)'; chargeCtx.lineWidth=5; chargeCtx.stroke();
+  const g=chargeCtx.createLinearGradient(0,0,104,104);
+  g.addColorStop(0,'#ffd66b'); g.addColorStop(1,'#a78bfa');
+  chargeCtx.beginPath(); chargeCtx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+Math.PI*2*pct);
+  chargeCtx.strokeStyle=g; chargeCtx.lineWidth=5; chargeCtx.lineCap='round'; chargeCtx.stroke();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CHARGE RING
+// ══════════════════════════════════════════════════════════════
+function drawChargeRing(pct) {
+  chargeCtx.clearRect(0,0,104,104);
+  if(pct<=0||chapter===CHAPTER.ONE) return;
+  const cx=52,cy=52,r=48;
+  chargeCtx.beginPath(); chargeCtx.arc(cx,cy,r,-Math.PI/2,Math.PI*1.5);
+  chargeCtx.strokeStyle='rgba(255,255,255,0.07)'; chargeCtx.lineWidth=5; chargeCtx.stroke();
+  const g=chargeCtx.createLinearGradient(0,0,104,104);
+  g.addColorStop(0,'#ffd66b'); g.addColorStop(1,'#a78bfa');
+  chargeCtx.beginPath(); chargeCtx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+Math.PI*2*pct);
+  chargeCtx.strokeStyle=g; chargeCtx.lineWidth=5; chargeCtx.lineCap='round'; chargeCtx.stroke();
+}
+
+// ══════════════════════════════════════════════════════════════
 function drawCharacter(sx, sy, facing, wf, state) {
   const moving = Math.abs(J.dx)>0.1 || keys['ArrowLeft'] || keys['ArrowRight'];
   ctx.save();
@@ -984,6 +1139,28 @@ function drawLester(wf, moving, state) {
   ctx.save(); ctx.fillStyle='rgba(0,0,0,0.28)';
   ctx.beginPath(); ctx.ellipse(0,0,crouch?22:16,crouch?3.5:5,0,0,Math.PI*2); ctx.fill();
   ctx.restore();
+
+  // Shield visual — ring around Lester when shield is active and not broken
+  const shieldOwned = typeof getUnlock !== 'undefined' && getUnlock('shield')?.owned;
+  if(shieldOwned && !player.shieldBroken){
+    const shieldAlpha = player.shieldFlash > 0
+      ? 0.9   // bright flash when recently hit (shouldn't happen if not broken, but safety)
+      : 0.35 + 0.1 * Math.sin(Date.now() * 0.004);
+    ctx.save();
+    ctx.strokeStyle=`rgba(140,210,255,${shieldAlpha})`;
+    ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.ellipse(0,-PH/2+8, 22, PH/2+4, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+  // Shield broken — red flash
+  if(player.shieldBroken && player.shieldFlash > 0){
+    const a = player.shieldFlash / 400;
+    ctx.save();
+    ctx.strokeStyle=`rgba(255,80,80,${a * 0.8})`;
+    ctx.lineWidth=3;
+    ctx.beginPath(); ctx.ellipse(0,-PH/2+8, 22, PH/2+4, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
 
   // ── Legs ──
   if(crouch){
@@ -1147,6 +1324,11 @@ function drawFog() {
   }
 }
 
+
+// ═══ hud.js ═══
+// hud.js — all UI: splash, home, gameover, chaptercard, HUD, skill menu, progress bar
+// Depends on: constants.js
+
 // ══════════════════════════════════════════════════════════════
 //  HUD / UI
 // ══════════════════════════════════════════════════════════════
@@ -1215,12 +1397,12 @@ function drawSkillMenu() {
 
     // Name
     const nameKnown=item.name!=='???';
-    ctx.fillStyle=bought?'#a78bfa':nameKnown&&canAfford?'#fff':'rgba(255,255,255,0.35)';
+    ctx.fillStyle=bought?'#a78bfa':nameKnown&&canAfford?'#fff':'rgba(255,200,200,0.6)';
     ctx.font=`${isHov?'bold ':''}12px Courier New`; ctx.textAlign='left';
     ctx.fillText(item.name, listX+12, iy+16);
 
     // Desc
-    ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='10px Courier New';
+    ctx.fillStyle='rgba(200,200,255,0.75)'; ctx.font='10px Courier New';
     ctx.fillText(bought&&item.desc!=='...' ? item.desc : nameKnown?item.desc:'???', listX+12, iy+30);
 
     // Right side: cost or status
@@ -1250,7 +1432,7 @@ function drawSkillMenu() {
   // Controls
   ctx.fillStyle='rgba(255,255,255,0.22)'; ctx.font='10px Courier New'; ctx.textAlign='center';
   ctx.fillText('↑↓ select  ·  ←→ switch tab  ·  Enter/tap to buy  ·  C to continue', cx, cy+122);
-  ctx.fillStyle='rgba(255,160,60,0.75)'; ctx.font='bold 11px Courier New';
+  ctx.fillStyle='#ffa040'; ctx.font='bold 11px Courier New';
   ctx.fillText('[ Continue Journey ]', cx, cy+140);
 
   ctx.restore();
@@ -1265,7 +1447,7 @@ function drawSkillMenu() {
 function drawSplash(ts) {
   const cx=canvas.width/2, cy=canvas.height/2;
   const t=ts*0.001;
-  drawBg(); drawStars(ts); drawMountains();
+  drawBg(ts); drawStars(ts); drawMountains();
 
   // Vignette
   const vig=ctx.createRadialGradient(cx,cy,canvas.height*0.2,cx,cy,canvas.height*0.85);
@@ -1306,7 +1488,7 @@ function drawHome(ts) {
   const cx=canvas.width/2, cy=canvas.height/2;
   const t=ts*0.001;
   // Background — reuse game bg
-  drawBg(); drawStars(ts); drawMountains();
+  drawBg(ts); drawStars(ts); drawMountains();
 
   // Title glow
   const grd=ctx.createRadialGradient(cx,cy-60,0,cx,cy-60,180);
@@ -1338,9 +1520,51 @@ function drawHome(ts) {
 
   // Controls hint
   ctx.save();
-  ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(255,255,255,0.65)'; ctx.font='10px Courier New'; ctx.textAlign='center';
   ctx.fillText('↑↓ or tap  ·  Enter to select', cx, cy+128);
   ctx.restore();
+
+  // New Game confirm dialog — drawn on top of home screen
+  if(newGameConfirmOpen){
+    // Dark overlay
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,0.75)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // Dialog box
+    const dw=260, dh=110, dx=cx-dw/2, dy=cy-dh/2+20;
+    ctx.fillStyle='#1a0d30';
+    ctx.beginPath(); ctx.roundRect(dx,dy,dw,dh,10); ctx.fill();
+    ctx.strokeStyle='rgba(255,214,107,0.6)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(dx,dy,dw,dh,10); ctx.stroke();
+
+    ctx.fillStyle='#fff'; ctx.font='bold 13px Courier New'; ctx.textAlign='center';
+    ctx.fillText('Reset everything?', cx, dy+28);
+    ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.font='10px Courier New';
+    ctx.fillText('Score, SP, skills and unlocks', cx, dy+46);
+    ctx.fillText('will all be wiped.', cx, dy+60);
+
+    // YES / NO buttons
+    const bw=90, bh=28, gap=14;
+    const yesBX=cx-gap/2-bw, noBX=cx+gap/2, btnY=dy+76;
+
+    ctx.fillStyle='rgba(255,80,80,0.25)';
+    ctx.beginPath(); ctx.roundRect(yesBX,btnY,bw,bh,6); ctx.fill();
+    ctx.strokeStyle='rgba(255,80,80,0.7)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(yesBX,btnY,bw,bh,6); ctx.stroke();
+    ctx.fillStyle='#ff8888'; ctx.font='bold 12px Courier New';
+    ctx.fillText('YES', yesBX+bw/2, btnY+bh/2+4);
+
+    ctx.fillStyle='rgba(100,255,100,0.2)';
+    ctx.beginPath(); ctx.roundRect(noBX,btnY,bw,bh,6); ctx.fill();
+    ctx.strokeStyle='rgba(100,255,100,0.6)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(noBX,btnY,bw,bh,6); ctx.stroke();
+    ctx.fillStyle='#88ff88'; ctx.font='bold 12px Courier New';
+    ctx.fillText('NO', noBX+bw/2, btnY+bh/2+4);
+
+    ctx.fillStyle='rgba(255,255,255,0.75)'; ctx.font='9px Courier New';
+    ctx.fillText('Y / Enter = yes   ·   N / Esc = no', cx, dy+dh+14);
+    ctx.restore();
+  }
 }
 
 function drawHowToPlay() {
@@ -1356,7 +1580,7 @@ function drawHowToPlay() {
   ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.font='bold 36px Courier New';
   ctx.fillText('SURVIVE', cx, cy+6);
 
-  ctx.fillStyle='rgba(255,255,255,0.25)'; ctx.font='11px Courier New';
+  ctx.fillStyle='rgba(255,255,255,0.75)'; ctx.font='11px Courier New';
   ctx.fillText('Tap  /  Enter to go back', cx, cy+60);
   ctx.restore();
 }
@@ -1397,7 +1621,7 @@ function drawProgressBar() {
   }
 
   // Start marker
-  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
   ctx.beginPath(); ctx.arc(trackX0, trackY, 2.5, 0, Math.PI*2); ctx.fill();
 
   // End marker
@@ -1429,16 +1653,17 @@ function drawHUD(ts) {
 
   // Chapter label (top left) — no spoilers, just the chapter number
   ctx.save();
-  ctx.fillStyle='rgba(180,150,255,0.55)'; ctx.font='12px Courier New'; ctx.textAlign='left';
+  ctx.fillStyle='rgba(200,180,255,0.85)'; ctx.font='12px Courier New'; ctx.textAlign='left';
   const chLabel = chapter===CHAPTER.ONE ? 'Chapter I' :
-                  chapter===CHAPTER.TWO ? 'Chapter II' : 'Chapter III';
+                  chapter===CHAPTER.TWO ? 'Chapter II' :
+                  chapter===CHAPTER.THREE ? 'Chapter III' : 'Chapter IV';
   ctx.fillText(chLabel, 16, 30);
   ctx.restore();
 
   // Skill points — always visible, even at 0.
   // Design intent: showing 0 creates aspiration; player knows what they're working toward.
   ctx.save();
-  ctx.fillStyle = skillPoints>0 ? 'rgba(167,139,250,0.9)' : 'rgba(167,139,250,0.35)';
+  ctx.fillStyle = skillPoints>0 ? '#c4b5fd' : 'rgba(167,139,250,0.65)';
   ctx.font='11px Courier New'; ctx.textAlign='left';
   ctx.fillText(`SP: ${skillPoints}`, 16, 48);
   ctx.restore();
@@ -1513,7 +1738,7 @@ function drawGameOver() {
     ctx.fillStyle = isNew ? '#a78bfa' : 'rgba(180,160,255,0.6)';
     ctx.font='11px Courier New';
     ctx.fillText(isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`, cx, topY+44);
-    ctx.fillStyle='rgba(200,200,255,0.4)';
+    ctx.fillStyle='rgba(200,200,255,0.85)';
     ctx.fillText(`All-time: ${Math.floor(totalScore)}`, cx, topY+58);
 
     // ── Action buttons: CONTINUE | RESTART | HOME ──
@@ -1534,9 +1759,9 @@ function drawGameOver() {
       ctx.font=`${isHov?'bold ':''}11px Courier New`; ctx.textAlign='center';
       ctx.fillText(label, bx+btnW/2, by+btnH/2+4);
     });
-    ctx.fillStyle='rgba(255,255,255,0.28)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+    ctx.fillStyle='rgba(255,220,120,0.85)'; ctx.font='10px Courier New'; ctx.textAlign='center';
     ctx.fillText(subtitles[homeMenuCursor]||'', cx, btnY+btnH+14);
-    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.fillStyle='rgba(255,255,255,0.65)';
     ctx.fillText('← → select  ·  tap or Enter to confirm', cx, btnY+btnH+26);
 
     // ── Skill menu embedded below ──
@@ -1581,9 +1806,11 @@ function drawGameOver() {
       ctx.strokeStyle=isHov?'rgba(167,139,250,0.6)':'rgba(255,255,255,0.07)';
       ctx.lineWidth=isHov?1.5:1;
       ctx.beginPath(); ctx.roundRect(listX,iy,listW,rowH-3,4); ctx.stroke();
-      ctx.fillStyle=bought?'#a78bfa':canAfford?'#fff':'rgba(255,255,255,0.3)';
+      const shieldLocked = menuTab===0 && item.id==='shield_str' && !hasUnlock('shield');
+      ctx.fillStyle = shieldLocked ? 'rgba(255,255,255,0.2)' :
+                      bought?'#a78bfa':canAfford?'#fff':'rgba(255,255,255,0.3)';
       ctx.font=`${isHov?'bold ':''}11px Courier New`; ctx.textAlign='left';
-      ctx.fillText(item.name, listX+10, iy+rowH/2+4);
+      ctx.fillText((shieldLocked?'🔒 ':'')+item.name, listX+10, iy+rowH/2+4);
       ctx.textAlign='right';
       if(menuTab===0){
         ctx.fillStyle=item.stacks>0?'rgba(167,139,250,0.8)':canAfford?'#ffd66b':'rgba(255,255,255,0.2)';
@@ -1620,7 +1847,7 @@ function drawChapterCard() {
     ctx.fillStyle=grd; ctx.fillRect(0,0,canvas.width,canvas.height);
 
     // Roman numeral chapter number — big, centered
-    const numeral = nextCh===CHAPTER.ONE?'I': nextCh===CHAPTER.TWO?'II':'III';
+    const numeral = nextCh===CHAPTER.ONE?'I': nextCh===CHAPTER.TWO?'II': nextCh===CHAPTER.THREE?'III':'IV';
     ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.font=`bold 120px Courier New`; ctx.textAlign='center';
     ctx.fillText(numeral, cx, cy+42);
 
@@ -1629,8 +1856,9 @@ function drawChapterCard() {
     ctx.fillText(`Chapter ${numeral}`, cx, cy-30);
 
     // Flavour line — cryptic, not a tutorial
-    const flavour = nextCh===CHAPTER.TWO ? 'Something has changed.' :
-                    nextCh===CHAPTER.THREE ? 'The world remembers.' : 'Onward.';
+    const flavour = nextCh===CHAPTER.TWO   ? 'Something has changed.' :
+                    nextCh===CHAPTER.THREE ? 'The world remembers.' :
+                    nextCh===CHAPTER.FOUR  ? 'They found you.' : 'Onward.';
     ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.font='13px Courier New';
     ctx.fillText(flavour, cx, cy-8);
 
@@ -1639,6 +1867,11 @@ function drawChapterCard() {
   }
   ctx.restore();
 }
+
+
+// ═══ game.js ═══
+// game.js — main loop, update, render, input handlers, startChapter
+// Load LAST — depends on all other modules.
 
 // ══════════════════════════════════════════════════════════════
 //  CATAPULT SEQUENCE UPDATE
@@ -1734,6 +1967,23 @@ function update(dt) {
   chapterTimer += dt;
   score += dt * 0.01;
 
+  // Shield flash timer — visual feedback when shield absorbs a hit
+  if(player.shieldFlash > 0) player.shieldFlash -= dt;
+
+  // Repair shield: if player owns shield unlock but it's broken,
+  // it repairs automatically after 8 seconds (souls-like feel).
+  // Design intent: shield is a safety net, not permanent invincibility.
+  if(player.shieldBroken){
+    if(!player.shieldRepairTimer) player.shieldRepairTimer = 0;
+    player.shieldRepairTimer += dt;
+    if(player.shieldRepairTimer >= 8000){
+      player.shieldBroken = false;
+      player.shieldRepairTimer = 0;
+    }
+  } else {
+    player.shieldRepairTimer = 0;
+  }
+
   // Fog wall advance (ch1 only).
   // Fog wall — ALL chapters. Snaps to one screen behind player on first activation.
   if(chapterTimer > FOG_DELAY){
@@ -1774,19 +2024,28 @@ function update(dt) {
   }
   player.x=Math.max(20, player.x+player.vx);
 
-  // Slide logic (Ch4+ only — Swooper makes it necessary).
-  // Trigger: joystick pushed down (dy>0.5) OR ArrowDown key, while moving on ground.
-  // Max slide duration: 600ms. Can't slide into a charge (different input path).
-  // Slide reduces collision height to PH*0.35 — enough to duck under Swooper.
-  // Slide: available from Ch4 onward (chapter-gated, no purchase needed).
-  // Base duration = 400ms. Slide Duration unlock adds 200ms per stack.
-  // Design intent: slide is the natural counter to Swooper which debuts in Ch4.
+  // Down input: joystick pushed down OR ArrowDown key
+  const downInput = J.dy > 0.5 || keys['ArrowDown'];
+  const isMoving  = Math.abs(player.vx) > 0.5;
+
+  // Duck (crouch without jump charge) — available always when grounded + not jumping.
+  // Holding down while still = duck. Reduces collision height, different animation.
+  // Does NOT queue a jump on release (only the jump button does that).
+  if(player.grounded && downInput && !JB.held && !keys[' '] && !player.sliding){
+    player.ducking = true;
+  } else {
+    player.ducking = false;
+  }
+
+  // Slide: Ch4+ only, requires movement. Overrides duck.
+  // Base duration = 400ms + 200ms per Slide Duration stack.
   const slideAvailable = chapter >= CHAPTER.FOUR;
   const slideDurUnlock = getUnlock('slide_dur');
   const slideMaxDur = 400 + (slideDurUnlock ? slideDurUnlock.stacks * 200 : 0);
-  const slideInput = (J.dy > 0.5 || keys['ArrowDown']) && Math.abs(player.vx) > 0.5;
+  const slideInput = downInput && isMoving;
   if(slideAvailable && player.grounded && slideInput && !player.crouching){
-    player.sliding = true;
+    player.sliding  = true;
+    player.ducking  = false; // slide overrides duck
     player.slideTimer = Math.min(player.slideTimer + dt, slideMaxDur);
   } else {
     if(player.slideTimer > 0) player.slideTimer -= dt * 2;
@@ -1830,7 +2089,7 @@ function update(dt) {
   const gy=GY();
   const feet=player.y+PH/2;
   // Effective player height for collisions: full, crouched, or sliding
-  const effectivePH = player.sliding ? PH*0.35 : player.crouching ? PH*0.6 : PH;
+  const effectivePH = player.sliding ? PH*0.35 : (player.crouching||player.ducking) ? PH*0.6 : PH;
   const pl=player.x-PW/2+4, pr=player.x+PW/2-4;
   player.grounded=false;
 
@@ -1899,17 +2158,19 @@ function update(dt) {
 // ══════════════════════════════════════════════════════════════
 function render(ts) {
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  drawBg();
+  drawBg(ts);
   drawStars(ts);
   drawMountains();
   drawBgTrees();
   drawTerrain();
-  if(chapter===CHAPTER.THREE) drawPlatforms();
+  if(chapter>=CHAPTER.THREE) drawPlatforms();
 
   // Catapult (ch1 always visible near the end)
   if(chapter===CHAPTER.ONE) drawCatapult(ts, CATAPULT_X);
   if(chapter===CHAPTER.TWO)   drawCatapult(ts, CATAPULT_X2);
   if(chapter===CHAPTER.THREE) drawCatapult(ts, CATAPULT_X3);
+  if(chapter===CHAPTER.TWO)   drawCatapult(ts, CATAPULT_X2);
+  if(chapter===CHAPTER.ONE)   drawCatapult(ts, CATAPULT_X);
 
   drawEnemies();
 
@@ -1918,7 +2179,7 @@ function render(ts) {
     const charState = player.flying ? 'jump' :
                       !player.grounded ? 'jump' :
                       player.sliding   ? 'slide' :
-                      player.crouching ? 'crouch' : 'stand';
+                      (player.crouching||player.ducking) ? 'crouch' : 'stand';
     drawCharacter(player.x-cameraX, player.y+PH/2, player.facing, player.walkFrame, charState);
   }
 
@@ -1962,42 +2223,121 @@ function confirmGameOver() {
   }
 }
 
+function fullReset() {
+  // Wipe everything — scores, SP, skills, unlocks.
+  // Called only after explicit confirmation from the New Game dialog.
+  highScore=0; totalScore=0; skillPoints=0;
+  localStorage.removeItem('uh_highscore');
+  localStorage.removeItem('uh_totalscore');
+  localStorage.removeItem('uh_skillpoints');
+  // Reset all skill stacks and costs to defaults
+  SKILLS.forEach(sk=>{ sk.stacks=0; sk.cost=sk.id==='spring'?15:sk.id==='shield_str'?25:sk.cost; });
+  UNLOCKS.forEach(un=>{ un.owned=false; un.active=false; un.stacks=0; });
+  newGameConfirmOpen=false;
+  startChapter(CHAPTER.ONE, true);
+}
+
 function confirmHome() {
+  if(newGameConfirmOpen){ return; } // handled separately by confirmNewGame
   if(howToPlayOpen){ howToPlayOpen=false; return; }
   if(homeMenuCursor===0){
-    // Continue — same chapter as when they died
     startChapter(chapter);
   } else if(homeMenuCursor===1){
-    // New Game — full reset from Ch1
-    startChapter(CHAPTER.ONE, true);
+    // Show confirmation dialog instead of immediately resetting
+    newGameConfirmOpen=true;
   } else {
-    // How To Play
     howToPlayOpen=true;
   }
 }
 
-// Mouse click — mirrors touchstart for desktop users.
-// Extracts clientX/Y and routes through the same menu logic.
+function confirmNewGame(yes) {
+  if(yes) fullReset();
+  else    newGameConfirmOpen=false;
+}
+
+// handlePointer — routes clicks/touches to the correct menu action.
+// IMPORTANT: on the gameover screen, check skill menu zones FIRST before
+// calling confirmGameOver. Any tap that hits a skill slot or tab should
+// buy/navigate, not restart. confirmGameOver only fires if the tap is
+// clearly in the action button row.
 function handlePointer(clientX, clientY) {
   if(gameState==='splash'&&stateTimer>800){ startChapter(CHAPTER.ONE,true); return; }
   if(howToPlayOpen){ howToPlayOpen=false; return; }
 
   if(gameState==='gameover' && stateTimer>700){
-    const rect=canvas.getBoundingClientRect();
-    const ty=clientY - rect.top;
-    const cy=canvas.height/2;
-    // 3 options spaced 32px apart starting at cy+24
-    if     (ty > cy+8  && ty < cy+40)  homeMenuCursor=0;
-    else if(ty > cy+40 && ty < cy+72)  homeMenuCursor=1;
-    else if(ty > cy+72 && ty < cy+104) homeMenuCursor=2;
-    confirmGameOver(); return;
+    const rect = canvas.getBoundingClientRect();
+    // Scale from CSS pixels to canvas pixels
+    const scaleY = canvas.height / rect.height;
+    const scaleX = canvas.width  / rect.width;
+    const cx = canvas.width  / 2;
+    const ty = (clientY - rect.top)  * scaleY;
+    const tx = (clientX - rect.left) * scaleX;
+
+    // ── Skill area zones (drawn in drawGameOver) ──
+    const skillY   = canvas.height * 0.56;
+    const tabY     = skillY + 28;
+    const listStartY = skillY + 58;
+    const rowH     = 32;
+    const listW    = canvas.width * 0.8;
+    const listX    = cx - listW / 2;
+    const tabW=80, tabGap=6, tabTotal=2*(tabW+tabGap)-tabGap;
+    const tabStartX = cx - tabTotal/2;
+
+    // Tab switch
+    if(ty >= tabY && ty <= tabY+22){
+      if(tx >= tabStartX && tx <= tabStartX+tabW){ menuTab=0; skillCursor=0; return; }
+      if(tx >= tabStartX+tabW+tabGap && tx <= tabStartX+tabTotal){ menuTab=1; skillCursor=0; return; }
+    }
+
+    // Skill row buy
+    const items = menuTab===0?SKILLS:UNLOCKS;
+    for(let i=0;i<Math.min(items.length,4);i++){
+      const iy=listStartY+i*rowH;
+      if(ty>=iy && ty<=iy+rowH-3 && tx>=listX && tx<=listX+listW){
+        skillCursor=i; buyItem(i); return;
+      }
+    }
+
+    // ── Action buttons (horizontal, at ~38% down canvas) ──
+    const btnY    = canvas.height * 0.38;
+    const btnH    = 30;
+    const btnW    = 110, btnGap = 10;
+    const btnTotal2 = 3*(btnW+btnGap)-btnGap;
+    const btnStartX = cx - btnTotal2/2;
+    let hitBtn = false;
+    for(let bi=0;bi<3;bi++){
+      const bx=btnStartX+bi*(btnW+btnGap);
+      if(tx>=bx && tx<=bx+btnW && ty>=btnY && ty<=btnY+btnH){
+        homeMenuCursor=bi; hitBtn=true;
+      }
+    }
+    if(hitBtn){ confirmGameOver(); return; }
+
+    // Tap outside all zones — do nothing (don't accidentally restart)
+    return;
   }
+
   if(gameState==='home'){
     const rect=canvas.getBoundingClientRect();
-    const ty=clientY - rect.top;
-    const cy=canvas.height/2;
+    const scaleY=canvas.height/rect.height;
+    const scaleX=canvas.width/rect.width;
+    const ty=(clientY-rect.top)*scaleY;
+    const tx=(clientX-rect.left)*scaleX;
+    const cx2=canvas.width/2, cy2=canvas.height/2;
+
+    // New Game confirm dialog
+    if(newGameConfirmOpen){
+      // YES button: left half of confirm area. NO: right half.
+      const dialogY=cy2+20;
+      if(ty>=dialogY && ty<=dialogY+36){
+        if(tx<cx2) confirmNewGame(true);
+        else       confirmNewGame(false);
+      }
+      return;
+    }
+
     HOME_OPTS.forEach((_,i)=>{
-      const oy=cy-4+i*42;
+      const oy=cy2-4+i*42;
       if(ty>=oy-20 && ty<=oy+14) homeMenuCursor=i;
     });
     confirmHome(); return;
@@ -2019,13 +2359,17 @@ function buyItem(cursor) {
   if(menuTab === 0){
     const sk = SKILLS[cursor];
     if(!sk) return;
+    // Shield Strength requires Shield unlock to be purchased first
+    if(sk.id==='shield_str' && !hasUnlock('shield')){
+      return; // silently block — UI shows it as locked
+    }
     if(skillPoints < sk.cost) return;
     if(sk.stackable){
       skillPoints -= sk.cost;
       sk.stacks++;
-      sk.cost = Math.round(sk.cost * 1.5); // escalate per stack
+      sk.cost = Math.round(sk.cost * 1.5);
     } else {
-      if(sk.stacks > 0) return; // already bought
+      if(sk.stacks > 0) return;
       skillPoints -= sk.cost;
       sk.stacks = 1;
     }
@@ -2087,6 +2431,11 @@ document.addEventListener('keydown', e=>{
 
   // Home screen navigation
   if(gameState==='home'){
+    if(newGameConfirmOpen){
+      if(e.key==='Enter'||e.key==='y'||e.key==='Y') confirmNewGame(true);
+      if(e.key==='Escape'||e.key==='n'||e.key==='N') confirmNewGame(false);
+      return;
+    }
     if(e.key==='ArrowDown') homeMenuCursor=(homeMenuCursor+1)%3;
     if(e.key==='ArrowUp')   homeMenuCursor=(homeMenuCursor+2)%3;
     if(e.key==='Enter')     confirmHome();
@@ -2104,6 +2453,7 @@ document.addEventListener('keydown', e=>{
 // Start at splash screen. Player taps/presses any key to begin Ch1.
 stateTimer=0; // splash uses stateTimer for its fade-in
 requestAnimationFrame(ts=>{ lastTime=ts; requestAnimationFrame(loop); });
+
 </script>
 </body>
 </html>
