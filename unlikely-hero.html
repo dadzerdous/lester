@@ -4,8 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Unlikely Hero</title>
-<style>
-/* style.css — Unlikely Hero */
+<style>/* style.css — Unlikely Hero */
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
   background:#0d0820; overflow:hidden;
@@ -65,24 +64,17 @@ canvas#game { display:block; width:100%; height:100%; image-rendering:pixelated;
   position:absolute; top:50%; left:50%;
   transform:translate(-50%,-50%); pointer-events:none; z-index:0;
 }
-
 </style>
 </head>
 <body>
 <div id="game-wrapper"><canvas id="game"></canvas></div>
 <div id="controls">
   <div id="joystick-zone">
-    <div id="joystick-base">
-      <div id="joystick-knob"></div>
-      <div class="joystick-label">Move</div>
-    </div>
+    <div id="joystick-base"><div id="joystick-knob"></div><div class="joystick-label">Move</div></div>
   </div>
   <div id="jump-zone">
     <canvas id="charge-canvas" width="104" height="104"></canvas>
-    <div id="jump-btn">
-      <span class="btn-icon">↑</span>
-      <span class="btn-label">Jump</span>
-    </div>
+    <div id="jump-btn"><span class="btn-icon">↑</span><span class="btn-label">Jump</span></div>
   </div>
 </div>
 <script>
@@ -137,7 +129,8 @@ let score          = 0;
 let homeMenuCursor = 0; // 0=Continue, 1=New Game, 2=How To Play
 let splashDone     = false; // latched after first splash dismiss
 let deathCount     = 0; // tracks if player has died at least once (gates home screen access)
-let howToPlayOpen  = false;
+let howToPlayOpen       = false;
+let newGameConfirmOpen  = false; // 'Are you sure?' overlay on New Game
 let cameraX        = 0;
 let lastTime       = 0;
 
@@ -571,6 +564,7 @@ function drawPlatforms() {
 // ══════════════════════════════════════════════════════════════
 const enemies = [];
 let eSpawnTimer = 0;
+let lastSpawnX  = -9999; // world X of last spawned enemy — prevents clustering
 
 // ── Creature roster ────────────────────────────────────────
 // label = internal dispatch key (used in draw switch + update)
@@ -622,12 +616,20 @@ function spawnEnemy() {
   const t = pool[irnd(0, pool.length-1)];
   const spawnX = player.x + canvas.width * 0.65 + rnd(0, 200);
   // Only spawn on ground
-  if (!isGroundAt(spawnX)) return;
   const isSwooper = t.label==='swooper';
+  // Minimum world-space gap between any two enemies.
+  // Prevents clusters that make sections impassable.
+  // Ground and air enemies share the same gap budget.
+  const MIN_ENEMY_GAP = 220;
+  if(spawnX - lastSpawnX < MIN_ENEMY_GAP) return false;
+  if (!isSwooper && !isGroundAt(spawnX)) return false;
   // Swooper spawns at a fixed high canvas Y — independent of player position.
   // It hovers there, then periodically dips toward the player's head level.
   // Using a fixed canvas Y prevents jitter from player vertical movement.
-  const spawnY = isSwooper ? rnd(30, 80) : GY() - t.h/2;
+  // Swooper hovers one full swooper-height above player's head.
+  // Player head = GY() - PH. Spawns t.h above that, so it's clearly in view.
+  // Spawn two full swooper-heights above player head — clearly visible, not cramped
+  const spawnY = isSwooper ? GY() - PH - t.h*2 - rnd(10, 20) : GY() - t.h/2;
   enemies.push({
     x: spawnX,
     y: spawnY,
@@ -644,6 +646,8 @@ function spawnEnemy() {
     baseY: spawnY,               // fixed hover altitude (canvas Y, not world Y)
     nameTimer: 1800,
   });
+  lastSpawnX = spawnX;
+  return true; // successfully spawned
 }
 
 function updateEnemies(dt) {
@@ -651,7 +655,11 @@ function updateEnemies(dt) {
 
   eSpawnTimer += dt;
   const interval = Math.max(1400, 3500 - score * 12);
-  if (eSpawnTimer >= interval) { spawnEnemy(); eSpawnTimer = 0; }
+  if (eSpawnTimer >= interval) {
+    const spawned = spawnEnemy();
+    if(spawned) eSpawnTimer = 0;
+    else eSpawnTimer = interval * 0.6; // retry sooner if spawn was blocked
+  }
 
   const gy = GY();
   for (let i = enemies.length-1; i >= 0; i--) {
@@ -710,13 +718,15 @@ function updateEnemies(dt) {
       }
 
       if(e.swooping){
-        const targetY = player.y - PH/2;  // player head level (dip target)
+        // Target = top of Lester's head. Never goes to ground.
+        // player.y is centre; player.y - PH/2 = top of head.
+        const targetY = Math.min(player.y - PH/2, GY() - e.h - 20);
         if(e.swoopPhase === 'down'){
           e.y += 4.5;   // fast descent
           if(e.y >= targetY){ e.y = targetY; e.swoopPhase = 'hold'; e.swoopHold = 0; }
         } else if(e.swoopPhase === 'hold'){
           e.swoopHold += dt;
-          if(e.swoopHold > 200){ e.swoopPhase = 'up'; } // hold at head level briefly
+          if(e.swoopHold > 700){ e.swoopPhase = 'up'; } // hold at head level — long enough to react
         } else {
           e.y -= 3.0;   // rise back up
           if(e.y <= e.baseY){ e.y = e.baseY; e.swooping = false; e.swoopTimer = rnd(1500,3000); }
@@ -1387,12 +1397,12 @@ function drawSkillMenu() {
 
     // Name
     const nameKnown=item.name!=='???';
-    ctx.fillStyle=bought?'#a78bfa':nameKnown&&canAfford?'#fff':'rgba(255,255,255,0.35)';
+    ctx.fillStyle=bought?'#a78bfa':nameKnown&&canAfford?'#fff':'rgba(255,200,200,0.6)';
     ctx.font=`${isHov?'bold ':''}12px Courier New`; ctx.textAlign='left';
     ctx.fillText(item.name, listX+12, iy+16);
 
     // Desc
-    ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='10px Courier New';
+    ctx.fillStyle='rgba(200,200,255,0.75)'; ctx.font='10px Courier New';
     ctx.fillText(bought&&item.desc!=='...' ? item.desc : nameKnown?item.desc:'???', listX+12, iy+30);
 
     // Right side: cost or status
@@ -1422,7 +1432,7 @@ function drawSkillMenu() {
   // Controls
   ctx.fillStyle='rgba(255,255,255,0.22)'; ctx.font='10px Courier New'; ctx.textAlign='center';
   ctx.fillText('↑↓ select  ·  ←→ switch tab  ·  Enter/tap to buy  ·  C to continue', cx, cy+122);
-  ctx.fillStyle='rgba(255,160,60,0.75)'; ctx.font='bold 11px Courier New';
+  ctx.fillStyle='#ffa040'; ctx.font='bold 11px Courier New';
   ctx.fillText('[ Continue Journey ]', cx, cy+140);
 
   ctx.restore();
@@ -1510,9 +1520,51 @@ function drawHome(ts) {
 
   // Controls hint
   ctx.save();
-  ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(255,255,255,0.65)'; ctx.font='10px Courier New'; ctx.textAlign='center';
   ctx.fillText('↑↓ or tap  ·  Enter to select', cx, cy+128);
   ctx.restore();
+
+  // New Game confirm dialog — drawn on top of home screen
+  if(newGameConfirmOpen){
+    // Dark overlay
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,0.75)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // Dialog box
+    const dw=260, dh=110, dx=cx-dw/2, dy=cy-dh/2+20;
+    ctx.fillStyle='#1a0d30';
+    ctx.beginPath(); ctx.roundRect(dx,dy,dw,dh,10); ctx.fill();
+    ctx.strokeStyle='rgba(255,214,107,0.6)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(dx,dy,dw,dh,10); ctx.stroke();
+
+    ctx.fillStyle='#fff'; ctx.font='bold 13px Courier New'; ctx.textAlign='center';
+    ctx.fillText('Reset everything?', cx, dy+28);
+    ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.font='10px Courier New';
+    ctx.fillText('Score, SP, skills and unlocks', cx, dy+46);
+    ctx.fillText('will all be wiped.', cx, dy+60);
+
+    // YES / NO buttons
+    const bw=90, bh=28, gap=14;
+    const yesBX=cx-gap/2-bw, noBX=cx+gap/2, btnY=dy+76;
+
+    ctx.fillStyle='rgba(255,80,80,0.25)';
+    ctx.beginPath(); ctx.roundRect(yesBX,btnY,bw,bh,6); ctx.fill();
+    ctx.strokeStyle='rgba(255,80,80,0.7)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(yesBX,btnY,bw,bh,6); ctx.stroke();
+    ctx.fillStyle='#ff8888'; ctx.font='bold 12px Courier New';
+    ctx.fillText('YES', yesBX+bw/2, btnY+bh/2+4);
+
+    ctx.fillStyle='rgba(100,255,100,0.2)';
+    ctx.beginPath(); ctx.roundRect(noBX,btnY,bw,bh,6); ctx.fill();
+    ctx.strokeStyle='rgba(100,255,100,0.6)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(noBX,btnY,bw,bh,6); ctx.stroke();
+    ctx.fillStyle='#88ff88'; ctx.font='bold 12px Courier New';
+    ctx.fillText('NO', noBX+bw/2, btnY+bh/2+4);
+
+    ctx.fillStyle='rgba(255,255,255,0.75)'; ctx.font='9px Courier New';
+    ctx.fillText('Y / Enter = yes   ·   N / Esc = no', cx, dy+dh+14);
+    ctx.restore();
+  }
 }
 
 function drawHowToPlay() {
@@ -1528,7 +1580,7 @@ function drawHowToPlay() {
   ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.font='bold 36px Courier New';
   ctx.fillText('SURVIVE', cx, cy+6);
 
-  ctx.fillStyle='rgba(255,255,255,0.25)'; ctx.font='11px Courier New';
+  ctx.fillStyle='rgba(255,255,255,0.75)'; ctx.font='11px Courier New';
   ctx.fillText('Tap  /  Enter to go back', cx, cy+60);
   ctx.restore();
 }
@@ -1569,7 +1621,7 @@ function drawProgressBar() {
   }
 
   // Start marker
-  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
   ctx.beginPath(); ctx.arc(trackX0, trackY, 2.5, 0, Math.PI*2); ctx.fill();
 
   // End marker
@@ -1601,7 +1653,7 @@ function drawHUD(ts) {
 
   // Chapter label (top left) — no spoilers, just the chapter number
   ctx.save();
-  ctx.fillStyle='rgba(180,150,255,0.55)'; ctx.font='12px Courier New'; ctx.textAlign='left';
+  ctx.fillStyle='rgba(200,180,255,0.85)'; ctx.font='12px Courier New'; ctx.textAlign='left';
   const chLabel = chapter===CHAPTER.ONE ? 'Chapter I' :
                   chapter===CHAPTER.TWO ? 'Chapter II' :
                   chapter===CHAPTER.THREE ? 'Chapter III' : 'Chapter IV';
@@ -1611,7 +1663,7 @@ function drawHUD(ts) {
   // Skill points — always visible, even at 0.
   // Design intent: showing 0 creates aspiration; player knows what they're working toward.
   ctx.save();
-  ctx.fillStyle = skillPoints>0 ? 'rgba(167,139,250,0.9)' : 'rgba(167,139,250,0.35)';
+  ctx.fillStyle = skillPoints>0 ? '#c4b5fd' : 'rgba(167,139,250,0.65)';
   ctx.font='11px Courier New'; ctx.textAlign='left';
   ctx.fillText(`SP: ${skillPoints}`, 16, 48);
   ctx.restore();
@@ -1686,7 +1738,7 @@ function drawGameOver() {
     ctx.fillStyle = isNew ? '#a78bfa' : 'rgba(180,160,255,0.6)';
     ctx.font='11px Courier New';
     ctx.fillText(isNew ? `★ NEW BEST: ${Math.floor(highScore)}` : `Best: ${Math.floor(highScore)}`, cx, topY+44);
-    ctx.fillStyle='rgba(200,200,255,0.4)';
+    ctx.fillStyle='rgba(200,200,255,0.85)';
     ctx.fillText(`All-time: ${Math.floor(totalScore)}`, cx, topY+58);
 
     // ── Action buttons: CONTINUE | RESTART | HOME ──
@@ -1707,9 +1759,9 @@ function drawGameOver() {
       ctx.font=`${isHov?'bold ':''}11px Courier New`; ctx.textAlign='center';
       ctx.fillText(label, bx+btnW/2, by+btnH/2+4);
     });
-    ctx.fillStyle='rgba(255,255,255,0.28)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+    ctx.fillStyle='rgba(255,220,120,0.85)'; ctx.font='10px Courier New'; ctx.textAlign='center';
     ctx.fillText(subtitles[homeMenuCursor]||'', cx, btnY+btnH+14);
-    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.fillStyle='rgba(255,255,255,0.65)';
     ctx.fillText('← → select  ·  tap or Enter to confirm', cx, btnY+btnH+26);
 
     // ── Skill menu embedded below ──
@@ -1754,9 +1806,11 @@ function drawGameOver() {
       ctx.strokeStyle=isHov?'rgba(167,139,250,0.6)':'rgba(255,255,255,0.07)';
       ctx.lineWidth=isHov?1.5:1;
       ctx.beginPath(); ctx.roundRect(listX,iy,listW,rowH-3,4); ctx.stroke();
-      ctx.fillStyle=bought?'#a78bfa':canAfford?'#fff':'rgba(255,255,255,0.3)';
+      const shieldLocked = menuTab===0 && item.id==='shield_str' && !hasUnlock('shield');
+      ctx.fillStyle = shieldLocked ? 'rgba(255,255,255,0.2)' :
+                      bought?'#a78bfa':canAfford?'#fff':'rgba(255,255,255,0.3)';
       ctx.font=`${isHov?'bold ':''}11px Courier New`; ctx.textAlign='left';
-      ctx.fillText(item.name, listX+10, iy+rowH/2+4);
+      ctx.fillText((shieldLocked?'🔒 ':'')+item.name, listX+10, iy+rowH/2+4);
       ctx.textAlign='right';
       if(menuTab===0){
         ctx.fillStyle=item.stacks>0?'rgba(167,139,250,0.8)':canAfford?'#ffd66b':'rgba(255,255,255,0.2)';
@@ -2169,42 +2223,121 @@ function confirmGameOver() {
   }
 }
 
+function fullReset() {
+  // Wipe everything — scores, SP, skills, unlocks.
+  // Called only after explicit confirmation from the New Game dialog.
+  highScore=0; totalScore=0; skillPoints=0;
+  localStorage.removeItem('uh_highscore');
+  localStorage.removeItem('uh_totalscore');
+  localStorage.removeItem('uh_skillpoints');
+  // Reset all skill stacks and costs to defaults
+  SKILLS.forEach(sk=>{ sk.stacks=0; sk.cost=sk.id==='spring'?15:sk.id==='shield_str'?25:sk.cost; });
+  UNLOCKS.forEach(un=>{ un.owned=false; un.active=false; un.stacks=0; });
+  newGameConfirmOpen=false;
+  startChapter(CHAPTER.ONE, true);
+}
+
 function confirmHome() {
+  if(newGameConfirmOpen){ return; } // handled separately by confirmNewGame
   if(howToPlayOpen){ howToPlayOpen=false; return; }
   if(homeMenuCursor===0){
-    // Continue — same chapter as when they died
     startChapter(chapter);
   } else if(homeMenuCursor===1){
-    // New Game — full reset from Ch1
-    startChapter(CHAPTER.ONE, true);
+    // Show confirmation dialog instead of immediately resetting
+    newGameConfirmOpen=true;
   } else {
-    // How To Play
     howToPlayOpen=true;
   }
 }
 
-// Mouse click — mirrors touchstart for desktop users.
-// Extracts clientX/Y and routes through the same menu logic.
+function confirmNewGame(yes) {
+  if(yes) fullReset();
+  else    newGameConfirmOpen=false;
+}
+
+// handlePointer — routes clicks/touches to the correct menu action.
+// IMPORTANT: on the gameover screen, check skill menu zones FIRST before
+// calling confirmGameOver. Any tap that hits a skill slot or tab should
+// buy/navigate, not restart. confirmGameOver only fires if the tap is
+// clearly in the action button row.
 function handlePointer(clientX, clientY) {
   if(gameState==='splash'&&stateTimer>800){ startChapter(CHAPTER.ONE,true); return; }
   if(howToPlayOpen){ howToPlayOpen=false; return; }
 
   if(gameState==='gameover' && stateTimer>700){
-    const rect=canvas.getBoundingClientRect();
-    const ty=clientY - rect.top;
-    const cy=canvas.height/2;
-    // 3 options spaced 32px apart starting at cy+24
-    if     (ty > cy+8  && ty < cy+40)  homeMenuCursor=0;
-    else if(ty > cy+40 && ty < cy+72)  homeMenuCursor=1;
-    else if(ty > cy+72 && ty < cy+104) homeMenuCursor=2;
-    confirmGameOver(); return;
+    const rect = canvas.getBoundingClientRect();
+    // Scale from CSS pixels to canvas pixels
+    const scaleY = canvas.height / rect.height;
+    const scaleX = canvas.width  / rect.width;
+    const cx = canvas.width  / 2;
+    const ty = (clientY - rect.top)  * scaleY;
+    const tx = (clientX - rect.left) * scaleX;
+
+    // ── Skill area zones (drawn in drawGameOver) ──
+    const skillY   = canvas.height * 0.56;
+    const tabY     = skillY + 28;
+    const listStartY = skillY + 58;
+    const rowH     = 32;
+    const listW    = canvas.width * 0.8;
+    const listX    = cx - listW / 2;
+    const tabW=80, tabGap=6, tabTotal=2*(tabW+tabGap)-tabGap;
+    const tabStartX = cx - tabTotal/2;
+
+    // Tab switch
+    if(ty >= tabY && ty <= tabY+22){
+      if(tx >= tabStartX && tx <= tabStartX+tabW){ menuTab=0; skillCursor=0; return; }
+      if(tx >= tabStartX+tabW+tabGap && tx <= tabStartX+tabTotal){ menuTab=1; skillCursor=0; return; }
+    }
+
+    // Skill row buy
+    const items = menuTab===0?SKILLS:UNLOCKS;
+    for(let i=0;i<Math.min(items.length,4);i++){
+      const iy=listStartY+i*rowH;
+      if(ty>=iy && ty<=iy+rowH-3 && tx>=listX && tx<=listX+listW){
+        skillCursor=i; buyItem(i); return;
+      }
+    }
+
+    // ── Action buttons (horizontal, at ~38% down canvas) ──
+    const btnY    = canvas.height * 0.38;
+    const btnH    = 30;
+    const btnW    = 110, btnGap = 10;
+    const btnTotal2 = 3*(btnW+btnGap)-btnGap;
+    const btnStartX = cx - btnTotal2/2;
+    let hitBtn = false;
+    for(let bi=0;bi<3;bi++){
+      const bx=btnStartX+bi*(btnW+btnGap);
+      if(tx>=bx && tx<=bx+btnW && ty>=btnY && ty<=btnY+btnH){
+        homeMenuCursor=bi; hitBtn=true;
+      }
+    }
+    if(hitBtn){ confirmGameOver(); return; }
+
+    // Tap outside all zones — do nothing (don't accidentally restart)
+    return;
   }
+
   if(gameState==='home'){
     const rect=canvas.getBoundingClientRect();
-    const ty=clientY - rect.top;
-    const cy=canvas.height/2;
+    const scaleY=canvas.height/rect.height;
+    const scaleX=canvas.width/rect.width;
+    const ty=(clientY-rect.top)*scaleY;
+    const tx=(clientX-rect.left)*scaleX;
+    const cx2=canvas.width/2, cy2=canvas.height/2;
+
+    // New Game confirm dialog
+    if(newGameConfirmOpen){
+      // YES button: left half of confirm area. NO: right half.
+      const dialogY=cy2+20;
+      if(ty>=dialogY && ty<=dialogY+36){
+        if(tx<cx2) confirmNewGame(true);
+        else       confirmNewGame(false);
+      }
+      return;
+    }
+
     HOME_OPTS.forEach((_,i)=>{
-      const oy=cy-4+i*42;
+      const oy=cy2-4+i*42;
       if(ty>=oy-20 && ty<=oy+14) homeMenuCursor=i;
     });
     confirmHome(); return;
@@ -2226,13 +2359,17 @@ function buyItem(cursor) {
   if(menuTab === 0){
     const sk = SKILLS[cursor];
     if(!sk) return;
+    // Shield Strength requires Shield unlock to be purchased first
+    if(sk.id==='shield_str' && !hasUnlock('shield')){
+      return; // silently block — UI shows it as locked
+    }
     if(skillPoints < sk.cost) return;
     if(sk.stackable){
       skillPoints -= sk.cost;
       sk.stacks++;
-      sk.cost = Math.round(sk.cost * 1.5); // escalate per stack
+      sk.cost = Math.round(sk.cost * 1.5);
     } else {
-      if(sk.stacks > 0) return; // already bought
+      if(sk.stacks > 0) return;
       skillPoints -= sk.cost;
       sk.stacks = 1;
     }
@@ -2294,6 +2431,11 @@ document.addEventListener('keydown', e=>{
 
   // Home screen navigation
   if(gameState==='home'){
+    if(newGameConfirmOpen){
+      if(e.key==='Enter'||e.key==='y'||e.key==='Y') confirmNewGame(true);
+      if(e.key==='Escape'||e.key==='n'||e.key==='N') confirmNewGame(false);
+      return;
+    }
     if(e.key==='ArrowDown') homeMenuCursor=(homeMenuCursor+1)%3;
     if(e.key==='ArrowUp')   homeMenuCursor=(homeMenuCursor+2)%3;
     if(e.key==='Enter')     confirmHome();
